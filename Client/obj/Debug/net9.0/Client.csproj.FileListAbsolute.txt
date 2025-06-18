@@ -1,0 +1,15 @@
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.GeneratedMSBuildEditorConfig.editorconfig
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.AssemblyInfoInputs.cache
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.AssemblyInfo.cs
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.csproj.CoreCompileInputs.cache
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.sourcelink.json
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Debug/net9.0/Client
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Debug/net9.0/Client.deps.json
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Debug/net9.0/Client.runtimeconfig.json
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Debug/net9.0/Client.dll
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Debug/net9.0/Client.pdb
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.dll
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/refint/Client.dll
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.pdb
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/Client.genruntimeconfig.cache
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Debug/net9.0/ref/Client.dll
