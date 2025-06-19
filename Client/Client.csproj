@@ -7,8 +7,14 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
-  <PropertyGroup>
-    <DefineConstants>CONSOLE_CLIENT</DefineConstants>
+  <!-- Debug-specific constants -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DefineConstants>DEBUG;TRACE;CONSOLE_CLIENT</DefineConstants>
+  </PropertyGroup>
+
+  <!-- Release-specific constants -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DefineConstants>RELEASE;TRACE</DefineConstants>
   </PropertyGroup>
 
 </Project>
