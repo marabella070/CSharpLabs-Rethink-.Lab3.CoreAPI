@@ -19,7 +19,7 @@ public class Client
     private readonly object consoleLock = new();
     private ILogOutput? logOutput = null;
 
-    public void SetLogOutput(ILogOutput output)
+    public void SetLogOutput(ILogOutput? output)
     {
         logOutput = output;
     }
@@ -77,7 +77,7 @@ public class Client
         }
         finally
         {
-            clientHandler!.Close();
+            clientHandler?.Close();
             PrintMessageToConsole("Connection closed.", Models.LogTag.Client);
         }
     }
