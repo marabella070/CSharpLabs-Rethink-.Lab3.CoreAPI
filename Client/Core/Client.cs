@@ -83,6 +83,11 @@ public class Client
         }
     }
 
+    public void Disconnect()
+    { 
+        clientHandler!.Writer.WriteLine("QUIT");
+    }
+
     private void ProcessUserInput()
     {
         while (true)
