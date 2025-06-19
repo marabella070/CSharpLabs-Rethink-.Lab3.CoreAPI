@@ -30,6 +30,10 @@ public class Client
     {
         try
         {
+            client = new TcpClient(host, port);
+
+            clientHandler = new Handlers.ClientHandler(client);
+
             // User Name Request
             PrintMessageToConsole("Enter your name:", Models.LogTag.Client);
 
