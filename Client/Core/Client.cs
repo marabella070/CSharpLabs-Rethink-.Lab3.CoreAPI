@@ -21,9 +21,6 @@ public class Client
     {
         this.host = host;
         this.port = port;
-        client = new TcpClient(host, port);
-
-        clientHandler = new Handlers.ClientHandler(client);
     }
 
     public void Run()
