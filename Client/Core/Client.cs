@@ -19,7 +19,7 @@ public class Client
     private readonly object consoleLock = new();
     private ILogOutput? logOutput = null;
 
-    public void SetLogStream(ILogOutput output)
+    public void SetLogOutput(ILogOutput output)
     {
         logOutput = output;
     }
