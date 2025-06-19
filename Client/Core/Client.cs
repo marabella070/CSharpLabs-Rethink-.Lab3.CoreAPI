@@ -8,9 +8,9 @@ using Client_v.Models;
 
 public class Client
 {
-    private TcpClient client;
+    private TcpClient? client;
     private string currentUser = string.Empty;
-    private Handlers.ClientHandler clientHandler;
+    private Handlers.ClientHandler? clientHandler;
     private readonly string host;
     private readonly int port;
     private readonly List<string> connectedClients = new();
@@ -64,7 +64,7 @@ public class Client
         }
         finally
         {
-            clientHandler.Close();
+            clientHandler!.Close();
             PrintMessageToConsole("Connection closed.", Models.LogTag.Client);
         }
     }
@@ -108,12 +108,12 @@ public class Client
 
             if (currentInput.Trim().Equals("QUIT", StringComparison.OrdinalIgnoreCase))
             {
-                clientHandler.Writer.WriteLine("QUIT");
+                clientHandler!.Writer.WriteLine("QUIT");
                 currentInput = "";
                 return true;
             }
 
-            clientHandler.Writer.WriteLine(currentInput);
+            clientHandler!.Writer.WriteLine(currentInput);
             currentInput = "";
         }
         else if (key.Key == ConsoleKey.Backspace)
@@ -144,7 +144,7 @@ public class Client
         {
             while (true)
             {
-                string? line = clientHandler.Reader.ReadLine();
+                string? line = clientHandler!.Reader.ReadLine();
 
                 if (line == null) break;
 
