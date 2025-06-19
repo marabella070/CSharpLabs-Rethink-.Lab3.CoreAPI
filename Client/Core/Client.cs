@@ -5,6 +5,7 @@ using System.Text;
 
 using Client_v.Handlers;
 using Client_v.Models;
+using Client_v.Intrefaces;
 
 public class Client
 {
@@ -16,13 +17,11 @@ public class Client
     private readonly List<string> connectedClients = new();
     private string currentInput = "";
     private readonly object consoleLock = new();
-    private Stream? logStream = null;
-    private StreamWriter? logWriter = null;
+    private ILogOutput? logOutput = null;
 
-    public void SetLogStream(Stream stream)
+    public void SetLogStream(ILogOutput output)
     {
-        logStream = stream;
-        logWriter = new StreamWriter(logStream) { AutoFlush = true };
+        logOutput = output;
     }
 
     public Client(string host, int port)
@@ -340,8 +339,7 @@ public class Client
             RedrawInputLine();
     #endif
 
-            logWriter?.WriteLine(taggedMessage.ToString());
-
+            logOutput?.Print(taggedMessage.ToString());
         }
     }
 }
