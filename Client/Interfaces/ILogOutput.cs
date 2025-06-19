@@ -1,4 +1,4 @@
-namespace Client_v.Intrefaces;
+namespace Client_v.Interfaces;
 
 public interface ILogOutput
 {
