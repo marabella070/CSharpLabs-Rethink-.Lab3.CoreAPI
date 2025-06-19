@@ -9,13 +9,21 @@ using Client_v.Models;
 public class Client
 {
     private TcpClient? client;
-    private string currentUser = string.Empty;
+    public string currentUser = string.Empty;
     private Handlers.ClientHandler? clientHandler;
     private readonly string host;
     private readonly int port;
     private readonly List<string> connectedClients = new();
     private string currentInput = "";
     private readonly object consoleLock = new();
+    private Stream? logStream = null;
+    private StreamWriter? logWriter = null;
+
+    public void SetLogStream(Stream stream)
+    {
+        logStream = stream;
+        logWriter = new StreamWriter(logStream) { AutoFlush = true };
+    }
 
     public Client(string host, int port)
     {
@@ -31,11 +39,13 @@ public class Client
 
             clientHandler = new Handlers.ClientHandler(client);
 
+#if CONSOLE_CLIENT
             // User Name Request
             PrintMessageToConsole("Enter your name:", Models.LogTag.Client);
 
             currentUser = Console.ReadLine()?.Trim() ?? $"user{Guid.NewGuid().ToString()[..4]}";
             Console.WriteLine();
+#endif
 
             // Sending the name to the server
             clientHandler.Writer.WriteLine($"AUTH:{currentUser}");
@@ -48,14 +58,18 @@ public class Client
             };
             receiveThread.Start();
 
+#if CONSOLE_CLIENT
             currentInput = "";
             Console.Write($"{currentUser}> ");
+#endif
 
+#if CONSOLE_CLIENT
             // User Input thread
             Thread inputThread = new(ProcessUserInput);
             inputThread.Start();
-
             inputThread.Join(); // Waiting for user input to complete
+#endif
+
             receiveThread.Join(); // Waiting for receive input to complete
         }
         catch (Exception ex)
@@ -280,6 +294,23 @@ public class Client
 
         lock (consoleLock)
         {
+            // Generating message
+            var taggedMessage = new StringBuilder();
+
+            if (tag is not null)
+            {
+                taggedMessage.Append($"[{tag}]: ");
+            }
+
+            taggedMessage.Append(message + "\n");
+
+            if (tag == Models.LogTag.Server)
+            {
+                taggedMessage.AppendLine();
+            }
+
+
+    #if CONSOLE_CLIENT
             // Memorizing the current cursor position
             int inputCursorLeft = Console.CursorLeft;
             int inputCursorTop = Console.CursorTop;
@@ -293,16 +324,7 @@ public class Client
             // Go back to the beginning of the line again
             Console.SetCursorPosition(0, inputCursorTop);
 
-            if (tag is not null)
-            {
-                Console.Write($"[{tag}]: ");
-            }
-            Console.WriteLine(message);
-
-            if (tag == Models.LogTag.Server)
-            {
-                Console.WriteLine();
-            }
+            Console.WriteLine(taggedMessage.ToString());
 
             // Move the cursor to a new line if the message does not fit.
             if (Console.CursorLeft >= Console.WindowWidth - 1)
@@ -311,6 +333,10 @@ public class Client
             }
 
             RedrawInputLine();
+    #endif
+
+            logWriter?.WriteLine(taggedMessage.ToString());
+
         }
     }
 }
