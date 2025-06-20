@@ -2,10 +2,13 @@ namespace Client_v.Core;
 
 using System.Net.Sockets;
 using System.Text;
+using System.Xml;
+using System.Xml.Serialization;
 
 using Client_v.Handlers;
 using Client_v.Models;
 using Client_v.Interfaces;
+using Shared.XML_Classes;
 
 public class Client
 {
@@ -14,7 +17,7 @@ public class Client
     private Handlers.ClientHandler? clientHandler;
     private readonly string host;
     private readonly int port;
-    private readonly List<string> connectedClients = new();
+    private List<ClientEntry> connectedClients = new();
     private string currentInput = "";
     private readonly object consoleLock = new();
     private ILogOutput? logOutput = null;
@@ -84,7 +87,7 @@ public class Client
 
     public void Disconnect()
     { 
-        clientHandler!.Writer.WriteLine("QUIT");
+        clientHandler?.Writer.WriteLine("QUIT");
     }
 
     private void ProcessUserInput()
@@ -162,24 +165,28 @@ public class Client
         {
             while (true)
             {
-                string? line = clientHandler!.Reader.ReadLine();
+                string message = ReadUntilEOF();
 
-                if (line == null) break;
+                if (string.IsNullOrWhiteSpace(message)) { continue; }
 
-                if (IsOpeningTag(line, out string? tagName))
+                // Remove Beginning/Ending spaces and <EOF> marker for clear check
+                string cleanMessage = message.Trim().Replace("<EOF>", "");
+
+                if (cleanMessage.TrimStart().StartsWith("<?xml") && TryGetRootTagName(cleanMessage, out string? tagName))
                 {
-                    string tagContent = ReadTagContent(line, tagName!, clientHandler.Reader);
-                    string? message = HandleTaggedMessage(tagName!, tagContent.ToString());
+                    string? processedMessage = HandleTaggedMessage(tagName!, cleanMessage);
 
-                    PrintMessageToConsole(message, Models.LogTag.Server);
+#if CONSOLE_CLIENT
+                    PrintMessageToConsole(processedMessage, Models.LogTag.Server);
+#endif
                 }
-                else if (line.IndexOf("QUIT APPROVED", StringComparison.OrdinalIgnoreCase) >= 0)
+                else if (cleanMessage.IndexOf("QUIT APPROVED", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     break;
                 }
                 else
                 {
-                    PrintMessageToConsole(line, Models.LogTag.Server);
+                    PrintMessageToConsole(cleanMessage, Models.LogTag.Server);
                 }
             }
         }
@@ -189,106 +196,88 @@ public class Client
         }
     }
 
-    private string ReadTagContent(string openingLine, string tagName, StreamReader reader)
+    private string ReadUntilEOF()
     {
-        var tagContent = new StringBuilder();
-        tagContent.AppendLine(openingLine);
-
-        string endTag = $"</{tagName}>";
+        var builder = new StringBuilder();
         string? line;
-        while ((line = reader.ReadLine()) != null)
+
+        while ((line = clientHandler!.Reader.ReadLine()) != null)
         {
-            tagContent.AppendLine(line);
-            if (line.Trim() == endTag) { break; }
+            if (line.Trim() == "<EOF>") { break; }
+
+            builder.AppendLine(line);
         }
 
-        return tagContent.ToString();
+        return builder.ToString();
     }
 
-    private bool IsOpeningTag(string line, out string? tagName)
+    private bool TryGetRootTagName(string xml, out string? tagName)
     {
         tagName = null;
-        line = line.Trim();
 
-        if (line.StartsWith('<') && line.EndsWith('>') && !line.StartsWith("</"))
+        try
         {
-            tagName = line[1..^1];
-            return true;
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml(xml);
+            tagName = xmlDoc.DocumentElement?.Name;
+            return tagName != null;
         }
-
-        return false;
+        catch (XmlException)
+        {
+            return false;
+        }
     }
 
-    private string? HandleTaggedMessage(string tagName, string block)
+    private string? HandleTaggedMessage(string tagName, string xml)
     {
-        switch (tagName)
+        switch (tagName.ToLower())
         {
             case "client_list":
-                return ProcessClientList(block);
+                var clients = DeserializeXml<ClientListMessage>(xml);
+
+                if (clients == null)
+                {
+                    PrintMessageToConsole("Invalid client list format", Models.LogTag.Error);
+                    return null;
+                }
+
+                connectedClients = clients.Clients;
+
+#if CONSOLE_CLIENT
+                var builder = new StringBuilder();
+                builder.AppendLine($"Connected Clients ({clients.Count}):");
+
+                foreach (var client in clients.Clients) 
+                {
+                    client.UserName += (client.UserName == currentUser) ? " (You)" : "";
+
+                    builder.AppendLine($"• [{client.Id}] {client.UserName}");
+                }
+
+                return builder.ToString();
+#else
+                return null;
+#endif
 
             default:
-                PrintMessageToConsole($"Unknown tag <{tagName}> received", Models.LogTag.Error);
-                PrintMessageToConsole(block);
+                PrintMessageToConsole($"[Unhandled XML tag: {tagName}]", Models.LogTag.Error);
                 return null;
         }
     }
 
-    private string? ProcessClientList(string block)
+    private T? DeserializeXml<T>(string xml) where T : class
     {
-        using StringReader stringReader = new(block);
-        string? line;
-
-        // Expecting for the opening tag
-        line = stringReader.ReadLine();
-        if (line?.Trim() != "<client_list>")
+        try
         {
-            PrintMessageToConsole("Expected <client_list> tag", Models.LogTag.Error);
+            var serializer = new XmlSerializer(typeof(T));
+            using var reader = new StringReader(xml);
+            return serializer.Deserialize(reader) as T;
+        }
+        catch (Exception ex)
+        {
+            PrintMessageToConsole($"XML parsing error: {ex.Message}", Models.LogTag.Error);
             return null;
         }
-
-        string? header = stringReader.ReadLine();
-        if (header?.Trim() != "CLIENT_LIST")
-        {
-            PrintMessageToConsole("Expected CLIENT_LIST header", Models.LogTag.Error);
-            return null;
-        }
-
-        string? countLine = stringReader.ReadLine();
-        int expectedCount = 0;
-        if (countLine != null && int.TryParse(countLine.Replace("Client count: (", "").Replace(")", ""), out expectedCount))
-        {
-            // ok
-        }
-
-        var outputBuffer = new StringBuilder();
-        outputBuffer.AppendLine($"\n--- List of connected clients ({expectedCount}) ---");
-
-        connectedClients.Clear();
-
-        // Reading client list
-        while ((line = stringReader.ReadLine()) != null)
-        {
-            if (line.Trim() == "</client_list>")
-                break;
-
-            if (string.IsNullOrWhiteSpace(line)) continue;
-
-            // Extracting the client's name from a string like "Client #X: name"
-            string userName = line;
-            int colonIndex = line.IndexOf(':');
-            if (colonIndex >= 0)
-            {
-                userName = line.Substring(colonIndex + 1).Trim();
-            }
-
-            connectedClients.Add(userName);
-
-            outputBuffer.AppendLine(userName == currentUser ? $"{userName} (You)" : userName);
-        }
-
-        outputBuffer.Append("----------------------------------");
-
-        return outputBuffer.ToString();
     }
 
     private void PrintMessageToConsole(string? message, Models.LogTag? tag = null)
@@ -314,7 +303,7 @@ public class Client
             }
 
 
-    #if CONSOLE_CLIENT
+#if CONSOLE_CLIENT
             // Memorizing the current cursor position
             int inputCursorLeft = Console.CursorLeft;
             int inputCursorTop = Console.CursorTop;
@@ -337,7 +326,7 @@ public class Client
             }
 
             RedrawInputLine();
-    #endif
+#endif
 
             logOutput?.Print(taggedMessage.ToString());
         }

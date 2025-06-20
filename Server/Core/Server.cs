@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Xml.Serialization;
 
 using Server.Helpers;
 using Server.Handlers;
+using Shared.XML_Classes;
 
 namespace Server.Core;
 
@@ -57,7 +59,8 @@ public class Server
             }
 
             // Send welcome message to the client
-            client.Writer.WriteLine($"Welcome {client.UserName} to the server!");
+            SendMessageToClient(client, $"Welcome {client.UserName} to the server!");
+
             Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] connected.");
 
             while (true)
@@ -72,11 +75,11 @@ public class Server
                 {
                     Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] initiated disconnect.");
 
-                    client.Writer.WriteLine($"Bye {client.UserName}, waiting for you back!");
+                    SendMessageToClient(client, $"Bye {client.UserName}, waiting for you back!");
 
                     BroadcastClientList(client);
 
-                    client.Writer.WriteLine("QUIT APPROVED");
+                    SendMessageToClient(client, "QUIT APPROVED");
 
                     break;
                 }
@@ -109,45 +112,48 @@ public class Server
     {
         lock (clients)
         {
-            // Creating a list of clients in the format:
-            // CLIENT_LIST (Clients count)
-            // user1
-            // user2
-            // ...
-            var clientList = new StringBuilder();
-
-            // Adding the opening tag
-            clientList.AppendLine("<client_list>");
-
-            clientList.AppendLine($"CLIENT_LIST");
-            clientList.AppendLine($"Client count: ({clients.Count})");
-
-            // List of clients
-
-            int count = 1;
+            var clientListMessage = new ClientListMessage();
 
             foreach (var client in clients)
             {
-                clientList.AppendLine($"Client #{count++}: {client.UserName}");
+                clientListMessage.Clients.Add(new ClientEntry
+                {
+                    Id = client.Id,
+                    UserName = client.UserName
+                });
             }
 
-            // Adding a closing tag
-            clientList.AppendLine("</client_list>");
+            string xmlMessage;
+            var serializer = new XmlSerializer(typeof(ClientListMessage));
 
-            string message = clientList.ToString();
-
-            // Sending message to current client all connected clients
-
-            try
+            using (var sw = new StringWriter())
             {
-                currentClient.Writer.WriteLine(message);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error sending client list to [ID: {currentClient.Id}, User name: {currentClient.UserName}]: {ex.Message}");
+                serializer.Serialize(sw, clientListMessage);
+                xmlMessage = sw.ToString();
             }
 
-            Console.WriteLine($"Broadcasted client list to {clients.Count} clients");
+            SendMessageToClient(currentClient, xmlMessage);
+
+            Console.WriteLine($"Broadcasted XML client list to {clients.Count} clients");
+        }
+    }
+
+    private void SendMessageToClient(ClientHandler client, string message)
+    {
+        try
+        {
+            // Adding a marker for the end of the message on a new line
+            string messageWithEof = $"{message}\n<EOF>";
+
+            // Sending a message
+            client.Writer.WriteLine(messageWithEof);
+            client.Writer.Flush();
+
+            Console.WriteLine($"Sent message to [ID: {client.Id}, User: {client.UserName}]");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error sending message to [ID: {client.Id}, User: {client.UserName}]: {ex.Message}");
         }
     }
 }
