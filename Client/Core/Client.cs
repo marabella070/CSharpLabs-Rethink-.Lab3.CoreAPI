@@ -108,7 +108,7 @@ public class Client
 
     public bool Disconnect()
     {
-        if (clientHandler == null || clientHandler.IsRunning) { return false; }
+        if (clientHandler == null || clientHandler.IsRunning) { return true; }
 
         var quitCommand = new QuitCommand { Reason = "Client requested disconnect" };
         string? quitXml = XmlHelper.SerializeToXml<QuitCommand>(quitCommand);
