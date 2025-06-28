@@ -12,13 +12,14 @@ public class ExchangeRequest
     [XmlElement("server_transaction_id")]
     public int ServerTransactionId { get; set; }
 
-
     [XmlElement("to_client_id")]
     public int toClientId { get; set; }
 
-
     [XmlElement("type_of_exchange_object")]
-    public string TypeOfExchangeObject { get; set; } = "";
+    public string TypeOfExchangeObject { get; set; } = string.Empty;
+
+    [XmlElement("data")]
+    public string XmlPayload { get; set; } = string.Empty;
 }
 
 [XmlRoot("exchange_response")]
@@ -100,6 +101,10 @@ public class ExchangeOffer
 
     [XmlElement("type_of_exchange_object")]
     public string TypeOfExchangeObject { get; set; } = "";
+
+
+    [XmlElement("data")]
+    public string XmlPayload { get; set; } = string.Empty;
 }
 
 
