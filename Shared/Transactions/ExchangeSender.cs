@@ -1,71 +1,82 @@
 namespace Shared.Transaction;
 
-public enum ExchangeSenderState
-{
-    PendingTransactionId,                 // 0. Запрошен ServerTransactionId, ожидается ответ
-    ExchangeRequestSent,                  // 1. Отправлен ExchangeRequest клиенту 2
-    ExchangeResponseReceived,             // 2. Получен ответ от клиента 2
-    ItemSent,                             // 3. Отправлен предмет от клиента 1
-    ItemReceiptConfirmedByRecipient,      // 4. Получено подтверждение от клиента 2
-    WaitingReverseExchangeRequest,        // 5. Запрос обратного обмена отправлен
-    ItemReceivedFromRecipient,            // 6. Получен предмет от клиента 2
-    ItemReceiptConfirmedToRecipient,      // 7. Подтверждено получение предмета
-    CompletedSuccessfully,                // 8. Успешное завершение
-    Failed                                // 8. Неуспешное завершение
-}
+// public enum ExchangeSenderState
+// {
+//     PendingTransactionId,                 // 0. Запрошен ServerTransactionId, ожидается ответ
+//     ExchangeRequestSent,                  // 1. Отправлен ExchangeRequest клиенту 2
+//     ExchangeResponseReceived,             // 2. Получен ответ от клиента 2
+//     ItemSent,                             // 3. Отправлен предмет от клиента 1
+//     ItemReceiptConfirmedByRecipient,      // 4. Получено подтверждение от клиента 2
+//     WaitingReverseExchangeRequest,        // 5. Запрос обратного обмена отправлен
+//     ItemReceivedFromRecipient,            // 6. Получен предмет от клиента 2
+//     ItemReceiptConfirmedToRecipient,      // 7. Подтверждено получение предмета
+//     CompletedSuccessfully,                // 8. Успешное завершение
+//     Failed                                // 8. Неуспешное завершение
+// }
 
-public class ExchangeSenderStateMachine : ITransactionStateMachine<ExchangeSenderState>
-{
-    private static readonly Dictionary<ExchangeSenderState, ExchangeSenderState[]> ValidTransitions = new()
-    {
-        [ExchangeSenderState.PendingTransactionId] = new[] {
-            ExchangeSenderState.ExchangeRequestSent,
-            ExchangeSenderState.Failed
-        },
+// public class ExchangeSenderStateMachine : ITransactionStateMachine<ExchangeSenderState>
+// {
+//     public ExchangeSenderState? GetNextState(ExchangeSenderState current)
+//     {
+//         if (ValidTransitions.TryGetValue(current, out var transitions))
+//         {
+//             // Возвращаем первый валидный, не "Failed", не терминальный
+//             return transitions.FirstOrDefault(s => !s.Equals((ExchangeSenderState)(object)ExchangeSenderState.Failed));
+//         }
 
-        [ExchangeSenderState.ExchangeRequestSent] = new[] {
-            ExchangeSenderState.ExchangeResponseReceived,
-            ExchangeSenderState.Failed
-        },
+//         return default;
+//     }
 
-        [ExchangeSenderState.ExchangeResponseReceived] = new[] {
-            ExchangeSenderState.ItemSent,
-            ExchangeSenderState.Failed
-        },
+//     private static readonly Dictionary<ExchangeSenderState, ExchangeSenderState[]> ValidTransitions = new()
+//     {
+//         [ExchangeSenderState.PendingTransactionId] = new[] {
+//             ExchangeSenderState.ExchangeRequestSent,
+//             ExchangeSenderState.Failed
+//         },
 
-        [ExchangeSenderState.ItemSent] = new[] {
-            ExchangeSenderState.ItemReceiptConfirmedByRecipient,
-            ExchangeSenderState.Failed
-        },
+//         [ExchangeSenderState.ExchangeRequestSent] = new[] {
+//             ExchangeSenderState.ExchangeResponseReceived,
+//             ExchangeSenderState.Failed
+//         },
 
-        [ExchangeSenderState.ItemReceiptConfirmedByRecipient] = new[] {
-            ExchangeSenderState.WaitingReverseExchangeRequest,
-            ExchangeSenderState.Failed
-        },
+//         [ExchangeSenderState.ExchangeResponseReceived] = new[] {
+//             ExchangeSenderState.ItemSent,
+//             ExchangeSenderState.Failed
+//         },
 
-        [ExchangeSenderState.WaitingReverseExchangeRequest] = new[] {
-            ExchangeSenderState.ItemReceivedFromRecipient,
-            ExchangeSenderState.Failed
-        },
+//         [ExchangeSenderState.ItemSent] = new[] {
+//             ExchangeSenderState.ItemReceiptConfirmedByRecipient,
+//             ExchangeSenderState.Failed
+//         },
 
-        [ExchangeSenderState.ItemReceivedFromRecipient] = new[] {
-            ExchangeSenderState.ItemReceiptConfirmedToRecipient,
-            ExchangeSenderState.Failed
-        },
+//         [ExchangeSenderState.ItemReceiptConfirmedByRecipient] = new[] {
+//             ExchangeSenderState.WaitingReverseExchangeRequest,
+//             ExchangeSenderState.Failed
+//         },
 
-        [ExchangeSenderState.ItemReceiptConfirmedToRecipient] = new[] {
-            ExchangeSenderState.CompletedSuccessfully,
-            ExchangeSenderState.Failed
-        },
+//         [ExchangeSenderState.WaitingReverseExchangeRequest] = new[] {
+//             ExchangeSenderState.ItemReceivedFromRecipient,
+//             ExchangeSenderState.Failed
+//         },
 
-        // Терминальные состояния
-        [ExchangeSenderState.CompletedSuccessfully] = Array.Empty<ExchangeSenderState>(),
-        [ExchangeSenderState.Failed] = Array.Empty<ExchangeSenderState>()
-    };
+//         [ExchangeSenderState.ItemReceivedFromRecipient] = new[] {
+//             ExchangeSenderState.ItemReceiptConfirmedToRecipient,
+//             ExchangeSenderState.Failed
+//         },
 
-    public bool IsTransitionAllowed(ExchangeSenderState from, ExchangeSenderState to)
-    {
-        return ValidTransitions.TryGetValue(from, out var allowed) && allowed.Contains(to);
-    }
-}
+//         [ExchangeSenderState.ItemReceiptConfirmedToRecipient] = new[] {
+//             ExchangeSenderState.CompletedSuccessfully,
+//             ExchangeSenderState.Failed
+//         },
+
+//         // Терминальные состояния
+//         [ExchangeSenderState.CompletedSuccessfully] = Array.Empty<ExchangeSenderState>(),
+//         [ExchangeSenderState.Failed] = Array.Empty<ExchangeSenderState>()
+//     };
+
+//     public bool IsTransitionAllowed(ExchangeSenderState from, ExchangeSenderState to)
+//     {
+//         return ValidTransitions.TryGetValue(from, out var allowed) && allowed.Contains(to);
+//     }
+// }
 

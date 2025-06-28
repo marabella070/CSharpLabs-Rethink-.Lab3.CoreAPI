@@ -1,6 +1,7 @@
 namespace Shared.Transaction;
 
-public interface ITransactionStateMachine<TState> where TState : Enum
-{
-    bool IsTransitionAllowed(TState from, TState to);
-}
+// public interface ITransactionStateMachine<TState> where TState : Enum
+// {
+//     bool IsTransitionAllowed(TState from, TState to);
+//     TState? GetNextState(TState current);
+// }

@@ -10,7 +10,6 @@ using Client_v.Models;
 using Client_v.Interfaces;
 using Shared.XML_Classes;
 using Shared.ID_Management;
-using Shared.Transaction;
 using Shared.Delegates;
 
 public class Client
@@ -31,7 +30,7 @@ public class Client
 
     //
     private List<ClientEntry> connectedClients = new();
-    private TransactionStore transactionStore = new();
+    private List<int> _transactions = new();
     private readonly IdManager<GridIdGenerator> _localTransactionIdsManager;
     private readonly Dictionary<int, TaskCompletionSource<int?>> _pendingGlobalTransactionIds = new();
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingReleases = new();
@@ -39,6 +38,7 @@ public class Client
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingItemReceipts = new();
     private readonly Dictionary<int, TaskCompletionSource<object?>> _pendingIncomingItems = new();
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingReverseRequests = new();
+    private readonly Dictionary<int, TaskCompletionSource<string?>> _pendingExchangeOffers = new();
 
     private ExchangeRequestHandler? _exchangeRequestHandler;
 
@@ -129,13 +129,7 @@ public class Client
             _pendingGlobalTransactionIds[pendingGlobalTransactionId] = tcs;
         }
 
-        // Добавляем создание и регистрацию транзакции
-        var transaction = new Transaction<TransactionIdAcquisitionState>(
-            TransactionIdAcquisitionState.Pending,
-            new TransactionIdAcquisitionStateMachine()
-        );
-
-        transactionStore.Add(pendingGlobalTransactionId, transaction);
+        _transactions.Add(pendingGlobalTransactionId);
 
         var transtitionIdRequestCommand = new TransitionIdRequest
         {
@@ -166,13 +160,7 @@ public class Client
             _pendingReleases[pendingReleaseTransitionId] = tcs;
         }
 
-        // Добавляем создание и регистрацию транзакции
-        var transaction = new Transaction<TransactionIdReleaseState>(
-            TransactionIdReleaseState.Pending,
-            new TransactionIdReleaseStateMachine()
-        );
-
-        transactionStore.Add(pendingReleaseTransitionId, transaction);
+        _transactions.Add(pendingReleaseTransitionId);
 
         var releaseRequest = new TransitionIdRelease
         {
@@ -201,23 +189,40 @@ public class Client
 
 
 
-    private async Task<(int? serverTransactionId, Transaction<ExchangeSenderState>? transaction)> AcquireTransactionAndStartExchangeAsync() //+++++++++++++++++++++
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    private async Task<int?> AcquireTransactionAndStartExchangeAsync() //+++++++++++++++++++++
     {
         int? serverTransactionId = await AcquireGlobalTransactionIdAsync();
         if (serverTransactionId is not int sid)
         {
             PrintMessageToConsole("Failed to acquire global transaction ID.", Models.LogTag.Error);
-            return (null, null);
+            return null;
         }
 
-        var transaction = new Transaction<ExchangeSenderState>(
-            ExchangeSenderState.PendingTransactionId,
-            new ExchangeSenderStateMachine()
-        );
-        transactionStore.Add(sid, transaction); //!!!!!!!! УДАЛИТЬ ЕГО КОГДА ЗАКОНЧУ
-        transaction.TransitionTo(ExchangeSenderState.ExchangeRequestSent);
-
-        return (sid, transaction);
+        return sid;
     }
 
     private async Task<bool> SendExchangeRequestAsync<T>(int sid, int toClientId, T item) //+++++++++++++++++++++
@@ -283,7 +288,7 @@ public class Client
         return await tcs.Task;
     }
 
-    private async Task<T?> ReceiveItemAsync<T>(int sid, int toClientId) //+++++++++++++++++++++
+    private async Task<string?> HandleReverseExchangeRequest(int sid, int toClientId) //+++++++++++++++++++++
     {
         var reverseRequest = new ReverseExchangeRequest
         {
@@ -298,24 +303,15 @@ public class Client
             return default;
         }
 
-        var tcs = new TaskCompletionSource<object?>();
-        lock (_pendingIncomingItems)
+        var tcs = new TaskCompletionSource<string?>();
+        lock (_pendingExchangeOffers)
         {
-            _pendingIncomingItems[sid] = tcs;
+            _pendingExchangeOffers[sid] = tcs;
         }
 
         SendMessageToServer(message);
 
-        object? result = await tcs.Task;
-
-        // Попытка привести result к типу T
-        if (result is T typedResult)
-        {
-            return typedResult;
-        }
-
-        PrintMessageToConsole($"Failed to cast received item to {typeof(T).Name}.", Models.LogTag.Error);
-        return default;
+        return await tcs.Task;
     }
 
     private void ConfirmItemReceipt(int sid, int toClientId)
@@ -337,62 +333,76 @@ public class Client
         SendMessageToServer(message);
     }
 
+
+
+    public async Task<bool> ProcessSendPartExchangeTransactionAsync<T>(int transactionId, int toClientId, T item)
+    {
+        // Отправка запроса на обмен
+        if (!await SendExchangeRequestAsync(transactionId, toClientId, item))
+        {
+            await ReleaseGlobalTransactionIdAsync(transactionId); // откатить транзакцию, если запрос на обмен не прошел
+            return false;
+        }
+
+        // Отправка элемента
+        if (!await SendItemAsync(transactionId, toClientId, item))
+        {
+            await ReleaseGlobalTransactionIdAsync(transactionId); // откатить транзакцию, если отправка элемента не удалась
+            return false;
+        }
+
+        // Если все шаги прошли успешно, возвращаем true
+        return true;
+    }
+
+
+
+
+
     // Sender
     public async Task<T?> ExchangeAsync<T>(int toClientId, T item)
     {
-        var (sid, transaction) = await AcquireTransactionAndStartExchangeAsync();
+        var sid = await AcquireTransactionAndStartExchangeAsync();
 
-        if (sid is not int transactionId || transaction == null)
+        if (sid is not int transactionId)
         {
             return default;
         }
 
+        // Отправка элемента со стороны Sender
+        bool sendingResult = await ProcessSendPartExchangeTransactionAsync(transactionId, toClientId, item);
+        if (!sendingResult) { return default; }
 
-
-
-
-        if (!await SendExchangeRequestAsync(transactionId, toClientId, item))
+        // Отправка запроса на обратный обмен и его прием
+        string? TypeOfExchangeObject = await HandleReverseExchangeRequest(transactionId, toClientId);
+        if (TypeOfExchangeObject == null)
         {
-            transaction.TransitionTo(ExchangeSenderState.Failed);
             await ReleaseGlobalTransactionIdAsync(transactionId);
             return default;
         }
 
-        transaction.TransitionTo(ExchangeSenderState.ItemSent);
+        // Работа с клиентом 2 по получению предмета
+        var receivedObject = await ProcessReveivePartExchangeTransactionAsync(transactionId, toClientId, TypeOfExchangeObject);
+        if (receivedObject == null) { return default; }
 
-        if (!await SendItemAsync(transactionId, toClientId, item))
-        {
-            transaction.TransitionTo(ExchangeSenderState.Failed);
-            await ReleaseGlobalTransactionIdAsync(transactionId);
-            return default;
-        }
-
-
-
-
-
-
-        transaction.TransitionTo(ExchangeSenderState.WaitingReverseExchangeRequest);
-
-
-
-
-
-        T? receivedItem = await ReceiveItemAsync<T>(transactionId, toClientId);
-        if (receivedItem == null)
-        {
-            transaction.TransitionTo(ExchangeSenderState.Failed);
-            await ReleaseGlobalTransactionIdAsync(transactionId);
-            return default;
-        }
-
+        // Подтверждение получения предмета
         ConfirmItemReceipt(transactionId, toClientId);
-        transaction.TransitionTo(ExchangeSenderState.ItemReceiptConfirmedToRecipient);
-        transaction.TransitionTo(ExchangeSenderState.CompletedSuccessfully);
 
         await ReleaseGlobalTransactionIdAsync(transactionId);
 
-        return receivedItem;
+
+        if (receivedObject is T typedResult)
+        {
+            // Подтверждение получения предмета
+            ConfirmItemReceipt(transactionId, toClientId);
+            await ReleaseGlobalTransactionIdAsync(transactionId);
+            return typedResult;
+        }
+
+        PrintMessageToConsole($"Failed to cast received item to {typeof(T).Name}.", Models.LogTag.Error);
+        await ReleaseGlobalTransactionIdAsync(transactionId);
+
+        return default;
     }
 
 
@@ -423,17 +433,6 @@ public class Client
 
 
 
-
-    private Transaction<ExchangeRecipientState> InitializeTransaction(int transactionId)
-    {
-        var transaction = new Transaction<ExchangeRecipientState>(
-            ExchangeRecipientState.IncomingExchangeOfferReceived,
-            new ExchangeRecipientStateMachine()
-        );
-        transactionStore.Add(transactionId, transaction); //!!!!!!!! УДАЛИТЬ ЕГО КОГДА ЗАКОНЧУ
-
-        return transaction;
-    }
 
     private async Task<object?> SendExchangeResponseAsync(int transactionId, int fromClientId, bool clientAnswer)
     { 
@@ -441,7 +440,7 @@ public class Client
         {
             ServerTransactionId = transactionId,
             toClientId = fromClientId,
-            Success = clientAccepted
+            Success = clientAnswer
         };
 
         string? responseXml = XmlHelper.SerializeToXml(responseCommand);
@@ -463,25 +462,34 @@ public class Client
         return await tcs.Task;
     }
 
-    private async Task<bool> WaitForReverseExchangeRequestAsync(int transactionId)
+    private async Task<bool> WaitForReverseExchangeRequestAsync(int transactionId, int fromClientId)
     {
         var tcs = new TaskCompletionSource<bool>();
         lock (_pendingReverseRequests)
         {
-            _pendingReverseRequests[sid] = tcs;
+            _pendingReverseRequests[transactionId] = tcs;
         }
 
-        ConfirmItemReceipt(transactionId);
+        ConfirmItemReceipt(transactionId, fromClientId);
 
         return await tcs.Task;
     }
 
-    private async Task HandleExchangeRequest(int transactionId, int fromClientId, string TypeOfExchangeObject)
-    {
-        if (_exchangeRequestHandler == null) { return; }
 
-        // 0. Инициализация транзакции на принимающем клиенте
-        var transaction = InitializeTransaction(transactionId);
+
+
+
+    public async Task<object?> ProcessReveivePartExchangeTransactionAsync(int transactionId, int toClientId, string TypeOfExchangeObject)
+    {
+        if (_exchangeRequestHandler == null) { return null; }
+
+
+        // Новый: получаем согласие и сам предмет
+        var response = await _exchangeRequestHandler(TypeOfExchangeObject);
+
+        // Пользователь отказался — ничего не делаем
+        if (!response.Accept) return null;
+
 
 
 
@@ -489,46 +497,29 @@ public class Client
 
         // 1. Ожидание ответа пользователя, на прием предложения об обмене
         bool clientAnswer = await _exchangeRequestHandler(TypeOfExchangeObject);
-        transaction.TransitionTo(ExchangeRecipientState.ExchangeOfferResponded);
 
         // 2. Отправление ответа // Ожидание предмета от клиента1
-        object? receivedItem = await SendExchangeResponseAsync(transactionId, fromClientId, clientAnswer);
-
-        if (receivedItem == null)
-        {
-            transaction.TransitionTo(ExchangeRecipientState.Failed);
-            return;
-        }
-
-        transaction.TransitionTo(ExchangeRecipientState.ItemReceivedFromSender);
+        return await SendExchangeResponseAsync(transactionId, toClientId, clientAnswer);
+    }
 
 
 
-
-
-
+    // Receiver
+    private async Task HandleExchangeRequest(int transactionId, int fromClientId, string TypeOfExchangeObject)
+    {
+        var reveivePartResult = ProcessReveivePartExchangeTransactionAsync(transactionId, fromClientId, TypeOfExchangeObject);
+        if (reveivePartResult == null) { return; }
 
         // 4. Подтверждаем получение предмета // Ожидаем запрос на обратный обмен
-        transaction.TransitionTo(ExchangeRecipientState.ItemReceiptConfirmedToSender);
+        bool reverseRequested = await WaitForReverseExchangeRequestAsync(transactionId, fromClientId);
+        if (!reverseRequested) { return; }
 
-        bool reverseRequested = await WaitForReverseExchangeRequestAsync(transactionId);
-        if (!reverseRequested)
-        {
-            transaction.TransitionTo(ExchangeRecipientState.Failed);
-            return;
-        }
+        // Отправка своих данных теперь происходит
+        bool sendingResult = await ProcessSendPartExchangeTransactionAsync(transactionId, fromClientId, item);
+        if (!sendingResult) { return; }
 
-        transaction.TransitionTo(ExchangeRecipientState.ReverseExchangeRequestedBySender);
+        // Предмет отправлен теперь можем спать спокойно
 
-
-
-
-
-
-
-
-
-        //!!!! Отправить приемный объект на GUI
         return;
     }
 
@@ -742,27 +733,6 @@ public class Client
                         return;
                     }
 
-                    // Получаем и обновляем состояние транзакции
-                    if (transactionStore.TryGet<TransactionIdAcquisitionState>(response.ClientTransactionId, out var transaction))
-                    {
-                        var newState = response.Success
-                            ? TransactionIdAcquisitionState.Completed
-                            : TransactionIdAcquisitionState.Failed;
-
-                        if (!transaction!.TransitionTo(newState))
-                        {
-                            PrintMessageToConsole($"Invalid state transition for transaction {response.ClientTransactionId}", Models.LogTag.Error);
-                            return;
-                        }
-
-                        transactionStore.Remove(response.ClientTransactionId);
-                    }
-                    else
-                    {
-                        PrintMessageToConsole($"Transaction {response.ClientTransactionId} not found", Models.LogTag.Warning);
-                        return;
-                    }
-
                     lock (_pendingGlobalTransactionIds)
                     {
                         if (_pendingGlobalTransactionIds.TryGetValue(response.ClientTransactionId, out var tcs))
@@ -783,27 +753,6 @@ public class Client
                     if (response == null)
                     {
                         PrintMessageToConsole("Invalid transition id release response format", Models.LogTag.Error);
-                        return;
-                    }
-
-                    // Получаем и обновляем состояние транзакции
-                    if (transactionStore.TryGet<TransactionIdReleaseState>(response.ClientTransactionId, out var transaction))
-                    {
-                        var newState = response.Success
-                            ? TransactionIdReleaseState.Released
-                            : TransactionIdReleaseState.Failed;
-
-                        if (!transaction!.TransitionTo(newState))
-                        {
-                            PrintMessageToConsole($"Invalid state transition for transaction {response.ClientTransactionId}", Models.LogTag.Error);
-                            return;
-                        }
-
-                        transactionStore.Remove(response.ClientTransactionId);
-                    }
-                    else
-                    {
-                        PrintMessageToConsole($"Transaction {response.ClientTransactionId} not found", Models.LogTag.Warning);
                         return;
                     }
 
@@ -829,25 +778,6 @@ public class Client
                         return;
                     }
 
-                    // Получаем и обновляем состояние транзакции
-                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
-                    {
-                        var newState = response.Success
-                            ? ExchangeSenderState.ExchangeResponseReceived
-                            : ExchangeSenderState.Failed;
-
-                        if (!transaction!.TransitionTo(newState))
-                        {
-                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
-                        return;
-                    }
-
                     lock (_pendingExchangeResponses)
                     {
                         if (_pendingExchangeResponses.TryGetValue(response.ServerTransactionId, out var tcs))
@@ -869,25 +799,6 @@ public class Client
                         return;
                     }
 
-                    // Получаем и обновляем состояние транзакции
-                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
-                    {
-                        var newState = response.Success
-                            ? ExchangeSenderState.ItemReceiptConfirmedByRecipient
-                            : ExchangeSenderState.Failed;
-
-                        if (!transaction!.TransitionTo(newState))
-                        {
-                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
-                        return;
-                    }
-
                     lock (_pendingItemReceipts)
                     {
                         if (_pendingItemReceipts.TryGetValue(response.ServerTransactionId, out var tcs))
@@ -906,23 +817,6 @@ public class Client
                     if (incoming == null || string.IsNullOrWhiteSpace(incoming.XmlPayload) || string.IsNullOrWhiteSpace(incoming.TypeName))
                     {
                         PrintMessageToConsole("Invalid incoming_item: missing payload or type name.", Models.LogTag.Error);
-                        return;
-                    }
-
-                    // Обновление состояния транзакции
-                    if (transactionStore.TryGet<ExchangeSenderState>(incoming.ServerTransactionId, out var transaction))
-                    {
-                        var newState = ExchangeSenderState.ItemReceivedFromRecipient;
-
-                        if (!transaction!.TransitionTo(newState))
-                        {
-                            PrintMessageToConsole($"Invalid state transition for transaction {incoming.ServerTransactionId}", Models.LogTag.Error);
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        PrintMessageToConsole($"Transaction {incoming.ServerTransactionId} not found", Models.LogTag.Warning);
                         return;
                     }
 
@@ -969,13 +863,47 @@ public class Client
                         return;
                     }
 
-                    // Запускаем обработку в фоне, без ожидания
-                    _ = HandleExchangeRequest(response.ServerTransactionId,
-                                            response.fromClientId,
-                                            response.TypeOfExchangeObject);
+                    lock (_pendingExchangeOffers)
+                    {
+                        if (_pendingExchangeOffers.TryGetValue(response.ServerTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(response.TypeOfExchangeObject);
+                            _pendingExchangeOffers.Remove(response.ServerTransactionId);
+                        }
+                        else
+                        { 
+                            // Запускаем обработку в фоне, без ожидания
+                            _ = HandleExchangeRequest(response.ServerTransactionId,
+                                                    response.fromClientId,
+                                                    response.TypeOfExchangeObject);
+                        }
+                    }
 
                     break;
                 }
+
+            case "reverse_exchange_offer":
+                { 
+                    var response = XmlHelper.DeserializeXml<ReverseExchangeOffer>(xml);
+
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id release response format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    lock (_pendingReverseRequests)
+                    {
+                        if (_pendingReverseRequests.TryGetValue(response.ServerTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(true);
+                            _pendingReverseRequests.Remove(response.ServerTransactionId);
+                        }
+                    }
+
+                    break;
+                }
+
             default:
                 { 
                     PrintMessageToConsole($"[Unhandled XML tag: {tagName}]", Models.LogTag.Error);
