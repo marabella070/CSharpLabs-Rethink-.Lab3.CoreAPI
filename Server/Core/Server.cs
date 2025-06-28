@@ -249,6 +249,13 @@ public class Server
                         return;
                     }
 
+                    ClientHandler? addressee = clients.FirstOrDefault(client => client.Id == release.toClientId);
+                    if (addressee == null)
+                    { 
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] There is no recipient with the transmitted ID in the database..");
+                        return;
+                    }
+
                     var response = new ExchangeOffer
                     {
                         ServerTransactionId = release.ServerTransactionId,
@@ -256,7 +263,7 @@ public class Server
                         TypeOfExchangeObject = release.TypeOfExchangeObject
                     };
 
-                    string? responseXml = XmlHelper.SerializeToXml<TransitionIdReleaseResponse>(response);
+                    string? responseXml = XmlHelper.SerializeToXml<ExchangeOffer>(response);
 
                     if (responseXml == null)
                     {
@@ -264,13 +271,13 @@ public class Server
                         return;
                     }
 
-                    SendMessageToClient(client, responseXml);
+                    SendMessageToClient(addressee, responseXml);
 
                     break;
                 }
-            case "send_item":
+            case  "exchange_response":
                 {
-                    var release = XmlHelper.DeserializeXml<ExchangeRequest>(xml);
+                    var release = XmlHelper.DeserializeXml<ExchangeResponse>(xml);
 
                     if (release == null)
                     {
@@ -278,57 +285,149 @@ public class Server
                         return;
                     }
 
-
-
-                    var itemSendCommand = new SendItem<T>
+                    ClientHandler? addressee = clients.FirstOrDefault(client => client.Id == release.toClientId);
+                    if (addressee == null)
                     {
-                        serverTransactionId = sid,
-                        Item = item
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] There is no recipient with the transmitted ID in the database..");
+                        return;
+                    }
+
+                    var response = new ExchangeResponseResult
+                    {
+                        ServerTransactionId = release.ServerTransactionId,
+                        fromClientId = client.Id,
+                        Success = release.Success
                     };
 
+                    string? responseXml = XmlHelper.SerializeToXml<ExchangeResponseResult>(response);
 
+                    if (responseXml == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
 
+                    SendMessageToClient(addressee, responseXml);
 
+                    break;
+                }
+            case "send_item":
+                {
+                    var release = XmlHelper.DeserializeXml<SendItem>(xml);
 
+                    if (release == null || string.IsNullOrWhiteSpace(release.XmlPayload) || string.IsNullOrWhiteSpace(release.TypeName))
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] Invalid incoming_item: missing payload or type name.");
+                        return;
+                    }
 
+                    try
+                    {
+                        ClientHandler? addressee = clients.FirstOrDefault(client => client.Id == release.toClientId);
+                        if (addressee == null)
+                        {
+                            Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] There is no recipient with the transmitted ID in the database..");
+                            return;
+                        }
 
+                        var response = new IncomingItem
+                        {
+                            ServerTransactionId = release.ServerTransactionId,
+                            fromClientId = client.Id,
+                            TypeName = release.TypeName,
+                            XmlPayload = release.XmlPayload
+                        };
 
+                        string? responseXml = XmlHelper.SerializeToXml<IncomingItem>(response);
 
-                    [XmlRoot("incoming_item")]
-public class IncomingItem<T>
-{
-    [XmlElement("server_transaction_id")]
-    public int ServerTransactionId { get; set; }
+                        if (responseXml == null)
+                        {
+                            Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                            return;
+                        }
 
+                        SendMessageToClient(addressee, responseXml);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Exception during deserialization: {ex.Message}");
+                        return;
+                    }
 
-    [XmlElement("from_client_id")]
-    public int fromClientId { get; set; }
+                    break;
+                }
+            case "receipt_confirmation":
+                {
+                    var release = XmlHelper.DeserializeXml<ReceiptConfirmation>(xml);
 
+                    if (release == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] sent invalid exchange_request.");
+                        return;
+                    }
 
-    [XmlAnyElement("item")]
-    public XmlElement? Item { get; set; }
-}
-                    // IncomingItem
+                    ClientHandler? addressee = clients.FirstOrDefault(client => client.Id == release.toClientId);
+                    if (addressee == null)
+                    { 
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] There is no recipient with the transmitted ID in the database..");
+                        return;
+                    }
+
+                    var response = new ReceiptConfirmationResult
+                    {
+                        ServerTransactionId = release.ServerTransactionId,
+                        fromClientId = client.Id, 
+                        Success = release.Success
+                    };
+
+                    string? responseXml = XmlHelper.SerializeToXml<ReceiptConfirmationResult>(response);
+
+                    if (responseXml == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
+
+                    SendMessageToClient(addressee, responseXml);
+
                     break;
                 }
             case "reverse_exchange_request":
                 {
+                    var release = XmlHelper.DeserializeXml<ReverseExchangeRequest>(xml);
 
-[XmlRoot("reverse_exchange_offer")]
-public class ReverseExchangeOffer
-{
-    [XmlElement("server_transaction_id")]
-    public int ServerTransactionId { get; set; }
+                    if (release == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] sent invalid exchange_request.");
+                        return;
+                    }
 
+                    ClientHandler? addressee = clients.FirstOrDefault(client => client.Id == release.toClientId);
+                    if (addressee == null)
+                    { 
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] There is no recipient with the transmitted ID in the database..");
+                        return;
+                    }
 
-    [XmlElement("from_client_id")]
-    public int fromClientId { get; set; }
-}
+                    var response = new ReverseExchangeOffer
+                    {
+                        ServerTransactionId = release.ServerTransactionId,
+                        fromClientId = client.Id, 
+                    };
 
+                    string? responseXml = XmlHelper.SerializeToXml<ReverseExchangeOffer>(response);
 
-        // ReverseExchangeOffer
-        break;
+                    if (responseXml == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
+
+                    SendMessageToClient(addressee, responseXml);
+
+                    break;
                 }
+
             default:
                 { 
                     Console.WriteLine($"Unhandled XML tag in [ID: {client.Id}, User: {client.UserName}]: {xml}");

@@ -37,18 +37,19 @@ public class ExchangeResponse
 }
 
 [XmlRoot("send_item")]
-public class SendItem<T>
+public class SendItem
 {
     [XmlElement("server_transaction_id")]
     public int ServerTransactionId { get; set; }
 
-
     [XmlElement("to_client_id")]
     public int toClientId { get; set; }
 
+    [XmlElement("type_name")]
+    public string TypeName { get; set; } = string.Empty;
 
-    [XmlElement("item")]
-    public T item { get; set; }
+    [XmlElement("data")]
+    public string XmlPayload { get; set; } = string.Empty;
 }
 
 [XmlRoot("receipt_confirmation")]
@@ -119,18 +120,22 @@ public class ExchangeResponseResult
 
 
 [XmlRoot("incoming_item")]
-public class IncomingItem<T>
+public class IncomingItem
 {
     [XmlElement("server_transaction_id")]
     public int ServerTransactionId { get; set; }
 
-
     [XmlElement("from_client_id")]
     public int fromClientId { get; set; }
 
+    [XmlElement("type_name")]
+    public string TypeName { get; set; } = string.Empty;
 
-    [XmlAnyElement("item")]
-    public XmlElement? Item { get; set; }
+    [XmlElement("data")]
+    public string XmlPayload { get; set; } = string.Empty;
+
+    // [XmlAnyElement("item")]
+    // public XmlElement? Item { get; set; }
 }
 
 

@@ -75,4 +75,15 @@ public static class XmlHelper
         var serializer = new XmlSerializer(type);
         return serializer.Deserialize(reader);
     }
+
+    // десериализация по строке типа
+    public static object? DeserializeXmlAsType(string xml, string typeName)
+    {
+        Type? type = Type.GetType(typeName);
+        if (type == null) return null;
+
+        using var sr = new StringReader(xml);
+        var serializer = new XmlSerializer(type);
+        return serializer.Deserialize(sr);
+    }
 }

@@ -11,6 +11,7 @@ using Client_v.Interfaces;
 using Shared.XML_Classes;
 using Shared.ID_Management;
 using Shared.Transaction;
+using Shared.Delegates;
 
 public class Client
 {
@@ -36,7 +37,17 @@ public class Client
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingReleases = new();
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingExchangeResponses = new();
     private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingItemReceipts = new();
-    private readonly Dictionary<int, TaskCompletionSource<T?>> _pendingIncomingItems = new();
+    private readonly Dictionary<int, TaskCompletionSource<object?>> _pendingIncomingItems = new();
+    private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingReverseRequests = new();
+
+    private ExchangeRequestHandler? _exchangeRequestHandler;
+
+
+    // Метод для регистрации обработчика запроса
+    public void RegisterExchangeRequestHandler(ExchangeRequestHandler handler)
+    {
+        _exchangeRequestHandler = handler;
+    }
 
     public void SetLogOutput(ILogOutput? output)
     {
@@ -213,7 +224,7 @@ public class Client
     {
         var exchangeRequestCommand = new ExchangeRequest
         {
-            serverTransactionId = sid,
+            ServerTransactionId = sid,
             toClientId = toClientId,
             TypeOfExchangeObject = item!.GetType().Name
         };
@@ -236,12 +247,22 @@ public class Client
         return await tcs.Task;
     }
 
-    private async Task<bool> SendItemAsync<T>(int sid, T item) //+++++++++++++++++++++
+    private async Task<bool> SendItemAsync<T>(int sid, int toClientId, T item) //+++++++++++++++++++++
     {
-        var itemSendCommand = new SendItem<T>
+        string? xmlData = XmlHelper.SerializeToXml(item);
+        string? typeName = typeof(T).AssemblyQualifiedName;
+        if (xmlData == null || typeName == null)
         {
-            serverTransactionId = sid,
-            Item = item
+            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            return default;
+        }
+
+        var itemSendCommand = new SendItem
+        {
+            ServerTransactionId = sid,
+            toClientId = toClientId,
+            TypeName = typeName,
+            XmlPayload = xmlData
         };
 
         string? message = XmlHelper.SerializeToXml(itemSendCommand);
@@ -262,11 +283,12 @@ public class Client
         return await tcs.Task;
     }
 
-    private async Task<T?> ReceiveItemAsync<T>(int sid) //+++++++++++++++++++++
+    private async Task<T?> ReceiveItemAsync<T>(int sid, int toClientId) //+++++++++++++++++++++
     {
         var reverseRequest = new ReverseExchangeRequest
         {
-            serverTransactionId = sid
+            ServerTransactionId = sid,
+            toClientId = toClientId
         };
 
         string? message = XmlHelper.SerializeToXml(reverseRequest);
@@ -276,7 +298,7 @@ public class Client
             return default;
         }
 
-        var tcs = new TaskCompletionSource<T?>();
+        var tcs = new TaskCompletionSource<object?>();
         lock (_pendingIncomingItems)
         {
             _pendingIncomingItems[sid] = tcs;
@@ -284,14 +306,25 @@ public class Client
 
         SendMessageToServer(message);
 
-        return await tcs.Task;
+        object? result = await tcs.Task;
+
+        // Попытка привести result к типу T
+        if (result is T typedResult)
+        {
+            return typedResult;
+        }
+
+        PrintMessageToConsole($"Failed to cast received item to {typeof(T).Name}.", Models.LogTag.Error);
+        return default;
     }
 
-    private void ConfirmItemReceipt(int sid)
+    private void ConfirmItemReceipt(int sid, int toClientId)
     {
         var confirm = new ReceiptConfirmation
         {
-            serverTransactionId = sid
+            ServerTransactionId = sid,
+            toClientId = toClientId,
+            Success = true
         };
 
         string? message = XmlHelper.SerializeToXml(confirm);
@@ -304,8 +337,7 @@ public class Client
         SendMessageToServer(message);
     }
 
-
-
+    // Sender
     public async Task<T?> ExchangeAsync<T>(int toClientId, T item)
     {
         var (sid, transaction) = await AcquireTransactionAndStartExchangeAsync();
@@ -314,6 +346,10 @@ public class Client
         {
             return default;
         }
+
+
+
+
 
         if (!await SendExchangeRequestAsync(transactionId, toClientId, item))
         {
@@ -324,16 +360,25 @@ public class Client
 
         transaction.TransitionTo(ExchangeSenderState.ItemSent);
 
-        if (!await SendItemAsync(transactionId, item))
+        if (!await SendItemAsync(transactionId, toClientId, item))
         {
             transaction.TransitionTo(ExchangeSenderState.Failed);
             await ReleaseGlobalTransactionIdAsync(transactionId);
             return default;
         }
 
+
+
+
+
+
         transaction.TransitionTo(ExchangeSenderState.WaitingReverseExchangeRequest);
 
-        T? receivedItem = await ReceiveItemAsync<T>(transactionId);
+
+
+
+
+        T? receivedItem = await ReceiveItemAsync<T>(transactionId, toClientId);
         if (receivedItem == null)
         {
             transaction.TransitionTo(ExchangeSenderState.Failed);
@@ -341,7 +386,7 @@ public class Client
             return default;
         }
 
-        ConfirmItemReceipt(transactionId);
+        ConfirmItemReceipt(transactionId, toClientId);
         transaction.TransitionTo(ExchangeSenderState.ItemReceiptConfirmedToRecipient);
         transaction.TransitionTo(ExchangeSenderState.CompletedSuccessfully);
 
@@ -349,6 +394,192 @@ public class Client
 
         return receivedItem;
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    private Transaction<ExchangeRecipientState> InitializeTransaction(int transactionId)
+    {
+        var transaction = new Transaction<ExchangeRecipientState>(
+            ExchangeRecipientState.IncomingExchangeOfferReceived,
+            new ExchangeRecipientStateMachine()
+        );
+        transactionStore.Add(transactionId, transaction); //!!!!!!!! УДАЛИТЬ ЕГО КОГДА ЗАКОНЧУ
+
+        return transaction;
+    }
+
+    private async Task<object?> SendExchangeResponseAsync(int transactionId, int fromClientId, bool clientAnswer)
+    { 
+        var responseCommand = new ExchangeResponse
+        {
+            ServerTransactionId = transactionId,
+            toClientId = fromClientId,
+            Success = clientAccepted
+        };
+
+        string? responseXml = XmlHelper.SerializeToXml(responseCommand);
+        if (responseXml == null)
+        {
+            PrintMessageToConsole("Failed to serialize exchange response.", Models.LogTag.Error);
+            return null;
+        }
+
+        var tcs = new TaskCompletionSource<object?>();
+        lock (_pendingIncomingItems)
+        {
+            _pendingIncomingItems[transactionId] = tcs;
+        }
+
+        SendMessageToServer(responseXml);
+
+        if (!clientAnswer) { return null; }
+        return await tcs.Task;
+    }
+
+    private async Task<bool> WaitForReverseExchangeRequestAsync(int transactionId)
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        lock (_pendingReverseRequests)
+        {
+            _pendingReverseRequests[sid] = tcs;
+        }
+
+        ConfirmItemReceipt(transactionId);
+
+        return await tcs.Task;
+    }
+
+    private async Task HandleExchangeRequest(int transactionId, int fromClientId, string TypeOfExchangeObject)
+    {
+        if (_exchangeRequestHandler == null) { return; }
+
+        // 0. Инициализация транзакции на принимающем клиенте
+        var transaction = InitializeTransaction(transactionId);
+
+
+
+
+
+        // 1. Ожидание ответа пользователя, на прием предложения об обмене
+        bool clientAnswer = await _exchangeRequestHandler(TypeOfExchangeObject);
+        transaction.TransitionTo(ExchangeRecipientState.ExchangeOfferResponded);
+
+        // 2. Отправление ответа // Ожидание предмета от клиента1
+        object? receivedItem = await SendExchangeResponseAsync(transactionId, fromClientId, clientAnswer);
+
+        if (receivedItem == null)
+        {
+            transaction.TransitionTo(ExchangeRecipientState.Failed);
+            return;
+        }
+
+        transaction.TransitionTo(ExchangeRecipientState.ItemReceivedFromSender);
+
+
+
+
+
+
+
+        // 4. Подтверждаем получение предмета // Ожидаем запрос на обратный обмен
+        transaction.TransitionTo(ExchangeRecipientState.ItemReceiptConfirmedToSender);
+
+        bool reverseRequested = await WaitForReverseExchangeRequestAsync(transactionId);
+        if (!reverseRequested)
+        {
+            transaction.TransitionTo(ExchangeRecipientState.Failed);
+            return;
+        }
+
+        transaction.TransitionTo(ExchangeRecipientState.ReverseExchangeRequestedBySender);
+
+
+
+
+
+
+
+
+
+        //!!!! Отправить приемный объект на GUI
+        return;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     private void ProcessUserInput()
     {
@@ -588,16 +819,9 @@ public class Client
 
                     break;
                 }
-
-
-
-
-
-
-
             case "exchange_response_result":
                 {
-                    var response = XmlHelper.DeserializeXml<TransitionIdReleaseResponse>(xml);
+                    var response = XmlHelper.DeserializeXml<ExchangeResponseResult>(xml);
 
                     if (response == null)
                     {
@@ -676,65 +900,58 @@ public class Client
                     break;
                 }
             case "incoming_item":
-                { 
-                    IncomingItem? incoming = XmlHelper.DeserializeXml<IncomingItem>(xml);
+                {
+                    var incoming = XmlHelper.DeserializeXml<IncomingItem>(xml);
 
-                    if (incoming == null || incoming.Item == null)
+                    if (incoming == null || string.IsNullOrWhiteSpace(incoming.XmlPayload) || string.IsNullOrWhiteSpace(incoming.TypeName))
                     {
-                        PrintMessageToConsole("Invalid incoming_item format or missing item data.", Models.LogTag.Error);
+                        PrintMessageToConsole("Invalid incoming_item: missing payload or type name.", Models.LogTag.Error);
                         return;
                     }
 
-                    // Получаем и обновляем состояние транзакции
-                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
+                    // Обновление состояния транзакции
+                    if (transactionStore.TryGet<ExchangeSenderState>(incoming.ServerTransactionId, out var transaction))
                     {
-                        var newState = response.Success
-                            ? ExchangeSenderState.ItemReceivedFromRecipient
-                            : ExchangeSenderState.Failed;
+                        var newState = ExchangeSenderState.ItemReceivedFromRecipient;
 
                         if (!transaction!.TransitionTo(newState))
                         {
-                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
+                            PrintMessageToConsole($"Invalid state transition for transaction {incoming.ServerTransactionId}", Models.LogTag.Error);
                             return;
                         }
                     }
                     else
                     {
-                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
+                        PrintMessageToConsole($"Transaction {incoming.ServerTransactionId} not found", Models.LogTag.Warning);
                         return;
                     }
 
                     lock (_pendingIncomingItems)
                     {
-                        if (_pendingIncomingItems.TryGetValue(incoming.serverTransactionId, out var tcsObj))
+                        if (_pendingIncomingItems.TryGetValue(incoming.ServerTransactionId, out var tcsObj))
                         {
-                            // Пытаемся десериализовать объект item как T (в зависимости от ожидаемого типа)
                             try
                             {
-                                Type? expectedType = tcsObj.Task.GetType().GenericTypeArguments.FirstOrDefault(); // получаем тип T из Task<T>
+                                object? deserialized = XmlHelper.DeserializeXmlAsType(incoming.XmlPayload, incoming.TypeName);
 
-                                if (expectedType == null)
+                                if (deserialized == null)
                                 {
-                                    PrintMessageToConsole("Cannot determine expected type for item.", Models.LogTag.Error);
-                                    tcsObj.SetResult(null);
+                                    PrintMessageToConsole("Failed to deserialize object from payload.", Models.LogTag.Error);
                                 }
-                                else
-                                {
-                                    object? deserialized = XmlHelper.DeserializeXmlFromElement(expectedType, incoming.Item);
-                                    tcsObj.SetResult(deserialized);
-                                }
+
+                                tcsObj.SetResult(deserialized);
                             }
                             catch (Exception ex)
                             {
-                                PrintMessageToConsole($"Failed to deserialize incoming item: {ex.Message}", Models.LogTag.Error);
+                                PrintMessageToConsole($"Exception during deserialization: {ex.Message}", Models.LogTag.Error);
                                 tcsObj.SetResult(null);
                             }
 
-                            _pendingIncomingItems.Remove(incoming.serverTransactionId);
+                            _pendingIncomingItems.Remove(incoming.ServerTransactionId);
                         }
                         else
                         {
-                            PrintMessageToConsole($"Unexpected incoming item for transaction {incoming.serverTransactionId}", Models.LogTag.Warning);
+                            PrintMessageToConsole($"Unexpected incoming item for transaction {incoming.ServerTransactionId}", Models.LogTag.Warning);
                         }
                     }
 
@@ -742,8 +959,23 @@ public class Client
                 }
 
 
+            case "exchange_offer":
+                {
+                    var response = XmlHelper.DeserializeXml<ExchangeOffer>(xml);
 
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id exchange_offer format", Models.LogTag.Error);
+                        return;
+                    }
 
+                    // Запускаем обработку в фоне, без ожидания
+                    _ = HandleExchangeRequest(response.ServerTransactionId,
+                                            response.fromClientId,
+                                            response.TypeOfExchangeObject);
+
+                    break;
+                }
             default:
                 { 
                     PrintMessageToConsole($"[Unhandled XML tag: {tagName}]", Models.LogTag.Error);
