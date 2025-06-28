@@ -13,3 +13,7 @@
 /home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Release/net9.0/Client.pdb
 /home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Release/net9.0/Client.genruntimeconfig.cache
 /home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Release/net9.0/ref/Client.dll
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Release/net9.0/Shared.dll
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/bin/Release/net9.0/Shared.pdb
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Release/net9.0/Client.csproj.AssemblyReference.cache
+/home/marabella/Programming/Labs/CSharpLabs/Lab3/CoreAPI/Client/obj/Release/net9.0/Client.csproj.Up2Date
