@@ -71,6 +71,8 @@ public class Client
 
             clientHandler = new Handlers.ClientHandler(client);
 
+            clientHandler.Run();
+
             AuthenticateUser();
 
             Thread receiveThread = new(ReceiveMessages)
@@ -104,18 +106,22 @@ public class Client
         }
     }
 
-    public void Disconnect()
+    public bool Disconnect()
     {
+        if (clientHandler == null || clientHandler.IsRunning) { return false; }
+
         var quitCommand = new QuitCommand { Reason = "Client requested disconnect" };
         string? quitXml = XmlHelper.SerializeToXml<QuitCommand>(quitCommand);
 
         if (quitXml == null)
         {
             PrintMessageToConsole("Something went wrong when sterilizing an xml document.", Models.LogTag.Error);
-            return;
+            return false;
         }
 
         SendMessageToServer(quitXml);
+
+        return true;
     }
 
     private async Task<int?> AcquireGlobalTransactionIdAsync()
