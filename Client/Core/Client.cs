@@ -54,6 +54,8 @@ public class Client
         logOutput = output;
     }
 
+    public List<ClientEntry> GetConnectedClients() => connectedClients;
+
     public Client(string host, int port)
     {
         this.host = host;
