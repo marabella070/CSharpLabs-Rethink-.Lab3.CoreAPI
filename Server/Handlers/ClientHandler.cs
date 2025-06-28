@@ -6,12 +6,12 @@ namespace Server.Handlers;
 public class ClientHandler
 {
     private TcpClient client;
-    public string Id { get; private set; }
+    public int Id { get; private set; }
     public string UserName { get; set; }
     public StreamReader Reader { get; private set; }
     public StreamWriter Writer { get; private set; }
 
-    public ClientHandler(TcpClient tcpClient, string userId)
+    public ClientHandler(TcpClient tcpClient, int userId)
     {
         client = tcpClient;
         Id = userId;

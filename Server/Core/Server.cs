@@ -3,9 +3,9 @@ using System.Net.Sockets;
 using System.Text;
 using System.Xml.Serialization;
 
-using Server.Helpers;
 using Server.Handlers;
 using Shared.XML_Classes;
+using Shared.ID_Management;
 
 namespace Server.Core;
 
@@ -13,13 +13,21 @@ public class Server
 {
     private TcpListener listener;
     private int port;
-    private readonly ClientIdManager _idManager = new();
+    private readonly IdManager<SimpleIdGenerator> _clientIdManager;
+    private readonly IdManager<GridIdGenerator> _transactionsIdManager;
     private List<ClientHandler> clients = new List<ClientHandler>();
+
 
     public Server(int port)
     {
         this.port = port;
         listener = new TcpListener(IPAddress.Any, port);
+
+        var simpleIdGenerator = new SimpleIdGenerator();
+        _clientIdManager = new IdManager<SimpleIdGenerator>(simpleIdGenerator);
+
+        var gridIdGenerator = new GridIdGenerator("node-1");
+        _transactionsIdManager = new IdManager<GridIdGenerator>(gridIdGenerator);
     }
 
     public void Start()
@@ -31,7 +39,7 @@ public class Server
         {
             TcpClient tcpClient = listener.AcceptTcpClient();
 
-            string userId = _idManager.GetNextId().ToString();
+            int userId = _clientIdManager.GetNextId();
 
             ClientHandler clientHandler = new ClientHandler(tcpClient, userId);
             lock (clients) clients.Add(clientHandler);
@@ -46,44 +54,9 @@ public class Server
         {
             client.UserName = "Not verified";
 
-            // Processing the mandatory first message from the user
-            string? initialMessage = client.Reader.ReadLine();
-            if (initialMessage != null && initialMessage.StartsWith("AUTH:"))
-            {
-                string _clientName = initialMessage.Substring("AUTH:".Length).Trim();
-                client.UserName = _clientName;
+            AuthenticateUser(client);
 
-                BroadcastClientList(client);
-
-                Console.WriteLine($"The client is connected [ID: {client.Id}, User name: {client.UserName}]");
-            }
-
-            // Send welcome message to the client
-            SendMessageToClient(client, $"Welcome {client.UserName} to the server!");
-
-            Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] connected.");
-
-            while (true)
-            {
-                string? msg = client.Reader.ReadLine();
-                if (msg == null) { break; }
-
-                Console.WriteLine($"Message from [ID: {client.Id}, User name: {client.UserName}]: {msg}");
-
-                // If client sent QUIT command
-                if (msg.IndexOf("QUIT", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] initiated disconnect.");
-
-                    SendMessageToClient(client, $"Bye {client.UserName}, waiting for you back!");
-
-                    BroadcastClientList(client);
-
-                    SendMessageToClient(client, "QUIT APPROVED");
-
-                    break;
-                }
-            }
+            ProcessMessages(client);
         }
         catch (Exception ex)
         {
@@ -96,15 +69,271 @@ public class Server
                 string LogMessage = $"Client [ID: {client.Id}, User name: {client.UserName}] fully disconnected.";
 
                 // Free up user number
-                if (int.TryParse(client.Id, out int userId))
-                {
-                    _idManager.ReleaseId(userId);
-                }
+                _clientIdManager.ReleaseId(client.Id);
 
                 client.Close();
                 clients.Remove(client);
                 Console.WriteLine(LogMessage);
             }
+        }
+    }
+
+    private void ProcessMessages(ClientHandler client)
+    {
+        try
+        {
+            while (true)
+            {
+                string message = XmlHelper.ReadUntilEOF(client.Reader);
+
+                if (string.IsNullOrWhiteSpace(message)) { continue; }
+
+                // Remove Beginning/Ending spaces and <EOF> marker for clear check
+                string cleanMessage = message.Trim().Replace("<EOF>", "");
+
+                if (cleanMessage.TrimStart().StartsWith("<?xml") &&
+                    XmlHelper.TryGetRootTagName(cleanMessage, out string? tagName))
+                {
+                    HandleTaggedMessage(client, tagName!, cleanMessage);
+                }
+                else
+                {
+                    Console.WriteLine($"Message from [ID: {client.Id}, User name: {client.UserName}]: {message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Reception error with client [ID: {client.Id}, User name: {client.UserName}]: {ex.Message}");
+        }
+    }
+
+    private void HandleTaggedMessage(ClientHandler client, string tagName, string xml)
+    {
+        switch (tagName.ToLower())
+        {
+            case "quit":
+                {
+                    QuitCommand? reasonToDisconnect = XmlHelper.DeserializeXml<QuitCommand>(xml);
+
+                    if (reasonToDisconnect == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] Invalid quit command format.");
+                        return;
+                    }
+
+                    Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] initiated disconnect.");
+                    Console.WriteLine($"Disconnect reason: {reasonToDisconnect.Reason}, Timestamp: {reasonToDisconnect.Timestamp}");
+
+
+                    SendMessageToClient(client, $"Bye {client.UserName}, waiting for you back!");
+
+                    BroadcastClientList(client);
+
+                    QuitApprovement(client);
+
+                    break;
+                }
+            case "auth":
+                { 
+                    AuthCommand? authCommand = XmlHelper.DeserializeXml<AuthCommand>(xml);
+
+                    if (authCommand == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] Invalid auth command format.");
+                        return;
+                    }
+
+                    client.UserName = authCommand.ClientName;
+                    Console.WriteLine($"The client is connected [ID: {client.Id}, User name: {client.UserName}]");
+
+                    BroadcastClientList(client);
+
+                    // Send welcome message to the client
+                    SendMessageToClient(client, $"Welcome {client.UserName} to the server!");
+
+                    break;
+                }
+            case "transition_id_request":
+                { 
+                    var request = XmlHelper.DeserializeXml<TransitionIdRequest>(xml);
+
+                    if (request == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User name: {client.UserName}] sent invalid transition_id_request.");
+                        return;
+                    }
+
+                    // Пытаемся сгенерировать ID
+                    int? serverTransactionId = null;
+                    bool success = false;
+
+                    try
+                    {
+                        serverTransactionId = _transactionsIdManager.GetNextId();
+                        success = true;
+
+                        Console.WriteLine($"Generated ServerTransactionID = {serverTransactionId} for client_transaction_id = {request.ClientTransactionId} (User: {client.UserName})");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to generate ID for client {client.UserName}: {ex.Message}");
+                    }
+
+                    var response = new TransitionIdRequestResponse
+                    {
+                        ClientTransactionId = request.ClientTransactionId,
+                        ServerTransactionId = serverTransactionId,
+                        Success = success
+                    };
+
+                    string? xmlMessage = XmlHelper.SerializeToXml<TransitionIdRequestResponse>(response);
+
+                    if (xmlMessage == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
+
+                    SendMessageToClient(client, xmlMessage);
+
+                    break;
+                }
+            case "transition_id_release":
+                { 
+                    var release = XmlHelper.DeserializeXml<TransitionIdRelease>(xml);
+
+                    if (release == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] sent invalid transition_id_release.");
+                        return;
+                    }
+
+                    bool success = false;
+
+                    try
+                    {
+                        success = _transactionsIdManager.ReleaseId(release.ServerTransactionId);
+                        Console.WriteLine($"Client [ID: {client.Id}] released ServerTransactionID = {release.ServerTransactionId}, success = {success}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error releasing ID: {ex.Message}");
+                    }
+
+                    var response = new TransitionIdReleaseResponse
+                    {
+                        ClientTransactionId = release.ClientTransactionId,
+                        Success = success
+                    };
+
+                    string? responseXml = XmlHelper.SerializeToXml<TransitionIdReleaseResponse>(response);
+
+                    if (responseXml == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
+
+                    SendMessageToClient(client, responseXml);
+
+                    break;
+                }
+            case "exchange_request":
+                {
+                    var release = XmlHelper.DeserializeXml<ExchangeRequest>(xml);
+
+                    if (release == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] sent invalid exchange_request.");
+                        return;
+                    }
+
+                    var response = new ExchangeOffer
+                    {
+                        ServerTransactionId = release.ServerTransactionId,
+                        fromClientId = client.Id, 
+                        TypeOfExchangeObject = release.TypeOfExchangeObject
+                    };
+
+                    string? responseXml = XmlHelper.SerializeToXml<TransitionIdReleaseResponse>(response);
+
+                    if (responseXml == null)
+                    {
+                        Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                        return;
+                    }
+
+                    SendMessageToClient(client, responseXml);
+
+                    break;
+                }
+            case "send_item":
+                {
+                    var release = XmlHelper.DeserializeXml<ExchangeRequest>(xml);
+
+                    if (release == null)
+                    {
+                        Console.WriteLine($"Client [ID: {client.Id}, User: {client.UserName}] sent invalid exchange_request.");
+                        return;
+                    }
+
+
+
+                    var itemSendCommand = new SendItem<T>
+                    {
+                        serverTransactionId = sid,
+                        Item = item
+                    };
+
+
+
+
+
+
+
+
+
+                    [XmlRoot("incoming_item")]
+public class IncomingItem<T>
+{
+    [XmlElement("server_transaction_id")]
+    public int ServerTransactionId { get; set; }
+
+
+    [XmlElement("from_client_id")]
+    public int fromClientId { get; set; }
+
+
+    [XmlAnyElement("item")]
+    public XmlElement? Item { get; set; }
+}
+                    // IncomingItem
+                    break;
+                }
+            case "reverse_exchange_request":
+                {
+
+[XmlRoot("reverse_exchange_offer")]
+public class ReverseExchangeOffer
+{
+    [XmlElement("server_transaction_id")]
+    public int ServerTransactionId { get; set; }
+
+
+    [XmlElement("from_client_id")]
+    public int fromClientId { get; set; }
+}
+
+
+        // ReverseExchangeOffer
+        break;
+                }
+            default:
+                { 
+                    Console.WriteLine($"Unhandled XML tag in [ID: {client.Id}, User: {client.UserName}]: {xml}");
+                    break;
+                }
         }
     }
 
@@ -123,19 +352,53 @@ public class Server
                 });
             }
 
-            string xmlMessage;
-            var serializer = new XmlSerializer(typeof(ClientListMessage));
+            string? xmlMessage = XmlHelper.SerializeToXml<ClientListMessage>(clientListMessage);
 
-            using (var sw = new StringWriter())
+            if (xmlMessage == null)
             {
-                serializer.Serialize(sw, clientListMessage);
-                xmlMessage = sw.ToString();
+                Console.WriteLine("Something went wrong when sterilizing an xml document.");
+                return;
             }
 
             SendMessageToClient(currentClient, xmlMessage);
 
             Console.WriteLine($"Broadcasted XML client list to {clients.Count} clients");
         }
+    }
+
+    private void QuitApprovement(ClientHandler client)
+    { 
+        var quitApprovedCommand = new QuitApprovedCommand { ApprovedBy = "Server" };
+        string? quitApprovedXml = XmlHelper.SerializeToXml<QuitApprovedCommand>(quitApprovedCommand);
+
+        if (quitApprovedXml == null)
+        {
+            Console.WriteLine("Something went wrong when sterilizing an xml document.");
+            return;
+        }
+
+        SendMessageToClient(client, quitApprovedXml);
+    }
+
+    private bool AuthenticateUser(ClientHandler client)
+    {
+        string message = XmlHelper.ReadUntilEOF(client.Reader);
+
+        if (string.IsNullOrWhiteSpace(message)) { return false; }
+
+        string cleanMessage = message.Trim().Replace("<EOF>", "");
+
+        if (cleanMessage.TrimStart().StartsWith("<?xml") &&
+            XmlHelper.TryGetRootTagName(cleanMessage, out string? tagName))
+        {
+            if (tagName!.ToLower() != "auth")
+            {
+                return false;
+            }
+
+            HandleTaggedMessage(client, tagName!, cleanMessage);
+        }
+        return true;
     }
 
     private void SendMessageToClient(ClientHandler client, string message)

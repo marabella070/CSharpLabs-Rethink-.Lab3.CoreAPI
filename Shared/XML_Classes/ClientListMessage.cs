@@ -15,7 +15,7 @@ public class ClientListMessage
 public class ClientEntry
 {
     [XmlAttribute("id")]
-    public string Id { get; set; } = "";
+    public int Id { get; set; }
 
     [XmlElement("name")]
     public string UserName { get; set; } = "";

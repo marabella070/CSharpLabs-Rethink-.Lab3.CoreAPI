@@ -9,18 +9,34 @@ using Client_v.Handlers;
 using Client_v.Models;
 using Client_v.Interfaces;
 using Shared.XML_Classes;
+using Shared.ID_Management;
+using Shared.Transaction;
 
 public class Client
 {
+    // main
     private TcpClient? client;
-    public string currentUser = string.Empty;
     private Handlers.ClientHandler? clientHandler;
+
+    // client parameters
+    public string currentUser = string.Empty;
     private readonly string host;
     private readonly int port;
-    private List<ClientEntry> connectedClients = new();
+
+    // input/output parameters
     private string currentInput = "";
     private readonly object consoleLock = new();
     private ILogOutput? logOutput = null;
+
+    //
+    private List<ClientEntry> connectedClients = new();
+    private TransactionStore transactionStore = new();
+    private readonly IdManager<GridIdGenerator> _localTransactionIdsManager;
+    private readonly Dictionary<int, TaskCompletionSource<int?>> _pendingGlobalTransactionIds = new();
+    private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingReleases = new();
+    private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingExchangeResponses = new();
+    private readonly Dictionary<int, TaskCompletionSource<bool>> _pendingItemReceipts = new();
+    private readonly Dictionary<int, TaskCompletionSource<T?>> _pendingIncomingItems = new();
 
     public void SetLogOutput(ILogOutput? output)
     {
@@ -31,6 +47,9 @@ public class Client
     {
         this.host = host;
         this.port = port;
+
+        var gridIdGenerator = new GridIdGenerator("node-2");
+        _localTransactionIdsManager = new IdManager<GridIdGenerator>(gridIdGenerator);
     }
 
     public void Run()
@@ -41,18 +60,7 @@ public class Client
 
             clientHandler = new Handlers.ClientHandler(client);
 
-#if CONSOLE_CLIENT
-            // User Name Request
-            PrintMessageToConsole("Enter your name:", Models.LogTag.Client);
-
-            currentUser = Console.ReadLine()?.Trim() ?? $"user{Guid.NewGuid().ToString()[..4]}";
-            Console.WriteLine();
-#endif
-
-            // Sending the name to the server
-            clientHandler.Writer.WriteLine($"AUTH:{currentUser}");
-
-            PrintMessageToConsole($"Connected to the server as {currentUser}...\n", Models.LogTag.Client);
+            AuthenticateUser();
 
             Thread receiveThread = new(ReceiveMessages)
             {
@@ -86,8 +94,260 @@ public class Client
     }
 
     public void Disconnect()
-    { 
-        clientHandler?.Writer.WriteLine("QUIT");
+    {
+        var quitCommand = new QuitCommand { Reason = "Client requested disconnect" };
+        string? quitXml = XmlHelper.SerializeToXml<QuitCommand>(quitCommand);
+
+        if (quitXml == null)
+        {
+            PrintMessageToConsole("Something went wrong when sterilizing an xml document.", Models.LogTag.Error);
+            return;
+        }
+
+        SendMessageToServer(quitXml);
+    }
+
+    private async Task<int?> AcquireGlobalTransactionIdAsync()
+    {
+        int pendingGlobalTransactionId = _localTransactionIdsManager.GetNextId();
+
+        var tcs = new TaskCompletionSource<int?>();
+
+        lock (_pendingGlobalTransactionIds)
+        {
+            _pendingGlobalTransactionIds[pendingGlobalTransactionId] = tcs;
+        }
+
+        // Добавляем создание и регистрацию транзакции
+        var transaction = new Transaction<TransactionIdAcquisitionState>(
+            TransactionIdAcquisitionState.Pending,
+            new TransactionIdAcquisitionStateMachine()
+        );
+
+        transactionStore.Add(pendingGlobalTransactionId, transaction);
+
+        var transtitionIdRequestCommand = new TransitionIdRequest
+        {
+            ClientTransactionId = pendingGlobalTransactionId
+        };
+
+        string? xmlMessage = XmlHelper.SerializeToXml<TransitionIdRequest>(transtitionIdRequestCommand);
+
+        if (xmlMessage == null)
+        {
+            PrintMessageToConsole("Something went wrong when sterilizing an xml document.", Models.LogTag.Error);
+            return null;
+        }
+
+        SendMessageToServer(xmlMessage);
+
+        return await tcs.Task; // ожидание ответа от сервера
+    }
+
+    public async Task<bool> ReleaseGlobalTransactionIdAsync(int serverTransactionId)
+    {
+        int pendingReleaseTransitionId = _localTransactionIdsManager.GetNextId();
+
+        var tcs = new TaskCompletionSource<bool>();
+
+        lock (_pendingReleases)
+        {
+            _pendingReleases[pendingReleaseTransitionId] = tcs;
+        }
+
+        // Добавляем создание и регистрацию транзакции
+        var transaction = new Transaction<TransactionIdReleaseState>(
+            TransactionIdReleaseState.Pending,
+            new TransactionIdReleaseStateMachine()
+        );
+
+        transactionStore.Add(pendingReleaseTransitionId, transaction);
+
+        var releaseRequest = new TransitionIdRelease
+        {
+            ClientTransactionId = pendingReleaseTransitionId,
+            ServerTransactionId = serverTransactionId
+        };
+
+        string? xmlMessage = XmlHelper.SerializeToXml(releaseRequest);
+        if (xmlMessage == null)
+        {
+            PrintMessageToConsole("Failed to serialize release request.", Models.LogTag.Error);
+            return false;
+        }
+
+        SendMessageToServer(xmlMessage);
+
+        return await tcs.Task;
+    }
+
+
+
+
+
+
+
+
+
+
+    private async Task<(int? serverTransactionId, Transaction<ExchangeSenderState>? transaction)> AcquireTransactionAndStartExchangeAsync() //+++++++++++++++++++++
+    {
+        int? serverTransactionId = await AcquireGlobalTransactionIdAsync();
+        if (serverTransactionId is not int sid)
+        {
+            PrintMessageToConsole("Failed to acquire global transaction ID.", Models.LogTag.Error);
+            return (null, null);
+        }
+
+        var transaction = new Transaction<ExchangeSenderState>(
+            ExchangeSenderState.PendingTransactionId,
+            new ExchangeSenderStateMachine()
+        );
+        transactionStore.Add(sid, transaction); //!!!!!!!! УДАЛИТЬ ЕГО КОГДА ЗАКОНЧУ
+        transaction.TransitionTo(ExchangeSenderState.ExchangeRequestSent);
+
+        return (sid, transaction);
+    }
+
+    private async Task<bool> SendExchangeRequestAsync<T>(int sid, int toClientId, T item) //+++++++++++++++++++++
+    {
+        var exchangeRequestCommand = new ExchangeRequest
+        {
+            serverTransactionId = sid,
+            toClientId = toClientId,
+            TypeOfExchangeObject = item!.GetType().Name
+        };
+
+        string? message = XmlHelper.SerializeToXml(exchangeRequestCommand);
+        if (message == null)
+        {
+            PrintMessageToConsole("Failed to serialize exchange request.", Models.LogTag.Error);
+            return false;
+        }
+
+        var tcs = new TaskCompletionSource<bool>();
+        lock (_pendingExchangeResponses)
+        {
+            _pendingExchangeResponses[sid] = tcs;
+        }
+
+        SendMessageToServer(message);
+
+        return await tcs.Task;
+    }
+
+    private async Task<bool> SendItemAsync<T>(int sid, T item) //+++++++++++++++++++++
+    {
+        var itemSendCommand = new SendItem<T>
+        {
+            serverTransactionId = sid,
+            Item = item
+        };
+
+        string? message = XmlHelper.SerializeToXml(itemSendCommand);
+        if (message == null)
+        {
+            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            return false;
+        }
+
+        var tcs = new TaskCompletionSource<bool>();
+        lock (_pendingItemReceipts)
+        {
+            _pendingItemReceipts[sid] = tcs;
+        }
+
+        SendMessageToServer(message);
+
+        return await tcs.Task;
+    }
+
+    private async Task<T?> ReceiveItemAsync<T>(int sid) //+++++++++++++++++++++
+    {
+        var reverseRequest = new ReverseExchangeRequest
+        {
+            serverTransactionId = sid
+        };
+
+        string? message = XmlHelper.SerializeToXml(reverseRequest);
+        if (message == null)
+        {
+            PrintMessageToConsole("Failed to serialize reverse exchange request.", Models.LogTag.Error);
+            return default;
+        }
+
+        var tcs = new TaskCompletionSource<T?>();
+        lock (_pendingIncomingItems)
+        {
+            _pendingIncomingItems[sid] = tcs;
+        }
+
+        SendMessageToServer(message);
+
+        return await tcs.Task;
+    }
+
+    private void ConfirmItemReceipt(int sid)
+    {
+        var confirm = new ReceiptConfirmation
+        {
+            serverTransactionId = sid
+        };
+
+        string? message = XmlHelper.SerializeToXml(confirm);
+        if (message == null)
+        {
+            PrintMessageToConsole("Failed to serialize item receipt confirmation.", Models.LogTag.Error);
+            return;
+        }
+
+        SendMessageToServer(message);
+    }
+
+
+
+    public async Task<T?> ExchangeAsync<T>(int toClientId, T item)
+    {
+        var (sid, transaction) = await AcquireTransactionAndStartExchangeAsync();
+
+        if (sid is not int transactionId || transaction == null)
+        {
+            return default;
+        }
+
+        if (!await SendExchangeRequestAsync(transactionId, toClientId, item))
+        {
+            transaction.TransitionTo(ExchangeSenderState.Failed);
+            await ReleaseGlobalTransactionIdAsync(transactionId);
+            return default;
+        }
+
+        transaction.TransitionTo(ExchangeSenderState.ItemSent);
+
+        if (!await SendItemAsync(transactionId, item))
+        {
+            transaction.TransitionTo(ExchangeSenderState.Failed);
+            await ReleaseGlobalTransactionIdAsync(transactionId);
+            return default;
+        }
+
+        transaction.TransitionTo(ExchangeSenderState.WaitingReverseExchangeRequest);
+
+        T? receivedItem = await ReceiveItemAsync<T>(transactionId);
+        if (receivedItem == null)
+        {
+            transaction.TransitionTo(ExchangeSenderState.Failed);
+            await ReleaseGlobalTransactionIdAsync(transactionId);
+            return default;
+        }
+
+        ConfirmItemReceipt(transactionId);
+        transaction.TransitionTo(ExchangeSenderState.ItemReceiptConfirmedToRecipient);
+        transaction.TransitionTo(ExchangeSenderState.CompletedSuccessfully);
+
+        await ReleaseGlobalTransactionIdAsync(transactionId);
+
+        return receivedItem;
     }
 
     private void ProcessUserInput()
@@ -129,12 +389,13 @@ public class Client
 
             if (currentInput.Trim().Equals("QUIT", StringComparison.OrdinalIgnoreCase))
             {
-                clientHandler!.Writer.WriteLine("QUIT");
+                Disconnect();
                 currentInput = "";
                 return true;
             }
 
-            clientHandler!.Writer.WriteLine(currentInput);
+
+            SendMessageToServer(currentInput);
             currentInput = "";
         }
         else if (key.Key == ConsoleKey.Backspace)
@@ -165,24 +426,20 @@ public class Client
         {
             while (true)
             {
-                string message = ReadUntilEOF();
+                string message = XmlHelper.ReadUntilEOF(clientHandler!.Reader);
 
                 if (string.IsNullOrWhiteSpace(message)) { continue; }
 
                 // Remove Beginning/Ending spaces and <EOF> marker for clear check
                 string cleanMessage = message.Trim().Replace("<EOF>", "");
 
-                if (cleanMessage.TrimStart().StartsWith("<?xml") && TryGetRootTagName(cleanMessage, out string? tagName))
+                if (cleanMessage.TrimStart().StartsWith("<?xml") &&
+                    XmlHelper.TryGetRootTagName(cleanMessage, out string? tagName))
                 {
-                    string? processedMessage = HandleTaggedMessage(tagName!, cleanMessage);
+                    HandleTaggedMessage(tagName!, cleanMessage);
 
-#if CONSOLE_CLIENT
-                    PrintMessageToConsole(processedMessage, Models.LogTag.Server);
-#endif
-                }
-                else if (cleanMessage.IndexOf("QUIT APPROVED", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    break;
+                    if (tagName!.ToLower() == "quit_approved") { break; }
+
                 }
                 else
                 {
@@ -196,87 +453,303 @@ public class Client
         }
     }
 
-    private string ReadUntilEOF()
-    {
-        var builder = new StringBuilder();
-        string? line;
-
-        while ((line = clientHandler!.Reader.ReadLine()) != null)
-        {
-            if (line.Trim() == "<EOF>") { break; }
-
-            builder.AppendLine(line);
-        }
-
-        return builder.ToString();
-    }
-
-    private bool TryGetRootTagName(string xml, out string? tagName)
-    {
-        tagName = null;
-
-        try
-        {
-            var xmlDoc = new XmlDocument();
-            xmlDoc.LoadXml(xml);
-            tagName = xmlDoc.DocumentElement?.Name;
-            return tagName != null;
-        }
-        catch (XmlException)
-        {
-            return false;
-        }
-    }
-
-    private string? HandleTaggedMessage(string tagName, string xml)
+    private void HandleTaggedMessage(string tagName, string xml)
     {
         switch (tagName.ToLower())
         {
             case "client_list":
-                var clients = DeserializeXml<ClientListMessage>(xml);
+                { 
+                    var clients = XmlHelper.DeserializeXml<ClientListMessage>(xml);
 
-                if (clients == null)
+                    if (clients == null)
+                    {
+                        PrintMessageToConsole("Invalid client list format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    connectedClients = clients.Clients;
+
+    #if CONSOLE_CLIENT
+                    var builder = new StringBuilder();
+                    builder.AppendLine($"Connected Clients ({clients.Count}):");
+
+                    foreach (var client in clients.Clients) 
+                    {
+                        client.UserName += (client.UserName == currentUser) ? " (You)" : "";
+
+                        builder.AppendLine($"• [{client.Id}] {client.UserName}");
+                    }
+
+                    PrintMessageToConsole(builder.ToString(), Models.LogTag.Server);
+    #endif
+                    break;
+                }
+            case "quit_approved":
+                { 
+                    QuitApprovedCommand? quitApprovedCommand = XmlHelper.DeserializeXml<QuitApprovedCommand>(xml);
+
+                    if (quitApprovedCommand == null)
+                    {
+                        PrintMessageToConsole("Invalid quit approved command format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    string logMessage = $"Quit request approved by {quitApprovedCommand.ApprovedBy}, " +
+                                        $"Timestamp: {quitApprovedCommand.Timestamp}";
+
+                    PrintMessageToConsole(logMessage, Models.LogTag.Server);
+
+                    break;
+                }
+            case "transition_id_request_response":
                 {
-                    PrintMessageToConsole("Invalid client list format", Models.LogTag.Error);
-                    return null;
+                    TransitionIdRequestResponse? response = XmlHelper.DeserializeXml<TransitionIdRequestResponse>(xml);
+
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id request response command format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    // Получаем и обновляем состояние транзакции
+                    if (transactionStore.TryGet<TransactionIdAcquisitionState>(response.ClientTransactionId, out var transaction))
+                    {
+                        var newState = response.Success
+                            ? TransactionIdAcquisitionState.Completed
+                            : TransactionIdAcquisitionState.Failed;
+
+                        if (!transaction!.TransitionTo(newState))
+                        {
+                            PrintMessageToConsole($"Invalid state transition for transaction {response.ClientTransactionId}", Models.LogTag.Error);
+                            return;
+                        }
+
+                        transactionStore.Remove(response.ClientTransactionId);
+                    }
+                    else
+                    {
+                        PrintMessageToConsole($"Transaction {response.ClientTransactionId} not found", Models.LogTag.Warning);
+                        return;
+                    }
+
+                    lock (_pendingGlobalTransactionIds)
+                    {
+                        if (_pendingGlobalTransactionIds.TryGetValue(response.ClientTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(response.Success ? response.ServerTransactionId : null);
+
+                            _pendingGlobalTransactionIds.Remove(response.ClientTransactionId);
+                            _localTransactionIdsManager.ReleaseId(response.ClientTransactionId);
+                        }
+                    }
+
+                    break;
+                }
+            case "transition_id_release_response":
+                { 
+                    var response = XmlHelper.DeserializeXml<TransitionIdReleaseResponse>(xml);
+
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id release response format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    // Получаем и обновляем состояние транзакции
+                    if (transactionStore.TryGet<TransactionIdReleaseState>(response.ClientTransactionId, out var transaction))
+                    {
+                        var newState = response.Success
+                            ? TransactionIdReleaseState.Released
+                            : TransactionIdReleaseState.Failed;
+
+                        if (!transaction!.TransitionTo(newState))
+                        {
+                            PrintMessageToConsole($"Invalid state transition for transaction {response.ClientTransactionId}", Models.LogTag.Error);
+                            return;
+                        }
+
+                        transactionStore.Remove(response.ClientTransactionId);
+                    }
+                    else
+                    {
+                        PrintMessageToConsole($"Transaction {response.ClientTransactionId} not found", Models.LogTag.Warning);
+                        return;
+                    }
+
+                    lock (_pendingReleases)
+                    {
+                        if (_pendingReleases.TryGetValue(response.ClientTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(response.Success);
+                            _pendingReleases.Remove(response.ClientTransactionId);
+                            _localTransactionIdsManager.ReleaseId(response.ClientTransactionId);
+                        }
+                    }
+
+                    break;
                 }
 
-                connectedClients = clients.Clients;
 
-#if CONSOLE_CLIENT
-                var builder = new StringBuilder();
-                builder.AppendLine($"Connected Clients ({clients.Count}):");
 
-                foreach (var client in clients.Clients) 
+
+
+
+
+            case "exchange_response_result":
                 {
-                    client.UserName += (client.UserName == currentUser) ? " (You)" : "";
+                    var response = XmlHelper.DeserializeXml<TransitionIdReleaseResponse>(xml);
 
-                    builder.AppendLine($"• [{client.Id}] {client.UserName}");
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id release response format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    // Получаем и обновляем состояние транзакции
+                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
+                    {
+                        var newState = response.Success
+                            ? ExchangeSenderState.ExchangeResponseReceived
+                            : ExchangeSenderState.Failed;
+
+                        if (!transaction!.TransitionTo(newState))
+                        {
+                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
+                        return;
+                    }
+
+                    lock (_pendingExchangeResponses)
+                    {
+                        if (_pendingExchangeResponses.TryGetValue(response.ServerTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(response.Success);
+                            _pendingExchangeResponses.Remove(response.ServerTransactionId);
+                        }
+                    }
+
+                    break;
+                }
+            case "receipt_confirmation_result":
+                {
+                    var response = XmlHelper.DeserializeXml<ReceiptConfirmationResult>(xml);
+
+                    if (response == null)
+                    {
+                        PrintMessageToConsole("Invalid transition id release response format", Models.LogTag.Error);
+                        return;
+                    }
+
+                    // Получаем и обновляем состояние транзакции
+                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
+                    {
+                        var newState = response.Success
+                            ? ExchangeSenderState.ItemReceiptConfirmedByRecipient
+                            : ExchangeSenderState.Failed;
+
+                        if (!transaction!.TransitionTo(newState))
+                        {
+                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
+                        return;
+                    }
+
+                    lock (_pendingItemReceipts)
+                    {
+                        if (_pendingItemReceipts.TryGetValue(response.ServerTransactionId, out var tcs))
+                        {
+                            tcs.SetResult(response.Success);
+                            _pendingItemReceipts.Remove(response.ServerTransactionId);
+                        }
+                    }
+
+                    break;
+                }
+            case "incoming_item":
+                { 
+                    IncomingItem? incoming = XmlHelper.DeserializeXml<IncomingItem>(xml);
+
+                    if (incoming == null || incoming.Item == null)
+                    {
+                        PrintMessageToConsole("Invalid incoming_item format or missing item data.", Models.LogTag.Error);
+                        return;
+                    }
+
+                    // Получаем и обновляем состояние транзакции
+                    if (transactionStore.TryGet<ExchangeSenderState>(response.ServerTransactionId, out var transaction))
+                    {
+                        var newState = response.Success
+                            ? ExchangeSenderState.ItemReceivedFromRecipient
+                            : ExchangeSenderState.Failed;
+
+                        if (!transaction!.TransitionTo(newState))
+                        {
+                            PrintMessageToConsole($"Invalid state transition for transaction {response.ServerTransactionId}", Models.LogTag.Error);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        PrintMessageToConsole($"Transaction {response.ServerTransactionId} not found", Models.LogTag.Warning);
+                        return;
+                    }
+
+                    lock (_pendingIncomingItems)
+                    {
+                        if (_pendingIncomingItems.TryGetValue(incoming.serverTransactionId, out var tcsObj))
+                        {
+                            // Пытаемся десериализовать объект item как T (в зависимости от ожидаемого типа)
+                            try
+                            {
+                                Type? expectedType = tcsObj.Task.GetType().GenericTypeArguments.FirstOrDefault(); // получаем тип T из Task<T>
+
+                                if (expectedType == null)
+                                {
+                                    PrintMessageToConsole("Cannot determine expected type for item.", Models.LogTag.Error);
+                                    tcsObj.SetResult(null);
+                                }
+                                else
+                                {
+                                    object? deserialized = XmlHelper.DeserializeXmlFromElement(expectedType, incoming.Item);
+                                    tcsObj.SetResult(deserialized);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                PrintMessageToConsole($"Failed to deserialize incoming item: {ex.Message}", Models.LogTag.Error);
+                                tcsObj.SetResult(null);
+                            }
+
+                            _pendingIncomingItems.Remove(incoming.serverTransactionId);
+                        }
+                        else
+                        {
+                            PrintMessageToConsole($"Unexpected incoming item for transaction {incoming.serverTransactionId}", Models.LogTag.Warning);
+                        }
+                    }
+
+                    break;
                 }
 
-                return builder.ToString();
-#else
-                return null;
-#endif
+
+
 
             default:
-                PrintMessageToConsole($"[Unhandled XML tag: {tagName}]", Models.LogTag.Error);
-                return null;
-        }
-    }
+                { 
+                    PrintMessageToConsole($"[Unhandled XML tag: {tagName}]", Models.LogTag.Error);
+                    break;
 
-    private T? DeserializeXml<T>(string xml) where T : class
-    {
-        try
-        {
-            var serializer = new XmlSerializer(typeof(T));
-            using var reader = new StringReader(xml);
-            return serializer.Deserialize(reader) as T;
-        }
-        catch (Exception ex)
-        {
-            PrintMessageToConsole($"XML parsing error: {ex.Message}", Models.LogTag.Error);
-            return null;
+                }
         }
     }
 
@@ -329,6 +802,46 @@ public class Client
 #endif
 
             logOutput?.Print(taggedMessage.ToString());
+        }
+    }
+    
+    private void AuthenticateUser()
+    {
+#if CONSOLE_CLIENT
+        // User Name Request
+        PrintMessageToConsole("Enter your name:", Models.LogTag.Client);
+
+        currentUser = Console.ReadLine()?.Trim() ?? $"user{Guid.NewGuid().ToString()[..4]}";
+        Console.WriteLine();
+#endif
+
+        var authCommand = new AuthCommand { ClientName = currentUser };
+        string? xmlMessage = XmlHelper.SerializeToXml<AuthCommand>(authCommand);
+
+        if (xmlMessage == null)
+        {
+            PrintMessageToConsole("Something went wrong when sterilizing an xml document.", Models.LogTag.Error);
+            return;
+        }
+
+        SendMessageToServer(xmlMessage);
+
+        PrintMessageToConsole($"Connected to the server as {currentUser}...\n", Models.LogTag.Client);
+    }
+
+    private void SendMessageToServer(string message)
+    {
+        try
+        {
+            // Adding a marker for the end of the message on a new line
+            string messageWithEof = $"{message}\n<EOF>";
+
+            // Sending a message
+            clientHandler?.Writer.WriteLine(messageWithEof);
+        }
+        catch (Exception ex)
+        {
+            PrintMessageToConsole($"Error sending message to server: {ex.Message}", Models.LogTag.Error);
         }
     }
 }
