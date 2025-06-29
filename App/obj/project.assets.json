@@ -52,6 +52,9 @@
       "Client/1.0.0": {
         "type": "project",
         "framework": ".NETCoreApp,Version=v9.0",
+        "dependencies": {
+          "Shared": "1.0.0"
+        },
         "compile": {
           "bin/placeholder/Client.dll": {}
         },
@@ -71,6 +74,16 @@
         },
         "runtime": {
           "bin/placeholder/Lab3.CoreAPI.Core.dll": {}
+        }
+      },
+      "Shared/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v9.0",
+        "compile": {
+          "bin/placeholder/Shared.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/Shared.dll": {}
         }
       }
     }
@@ -159,6 +172,11 @@
       "type": "project",
       "path": "../Core/Core.csproj",
       "msbuildProject": "../Core/Core.csproj"
+    },
+    "Shared/1.0.0": {
+      "type": "project",
+      "path": "../Shared/Shared.csproj",
+      "msbuildProject": "../Shared/Shared.csproj"
     }
   },
   "projectFileDependencyGroups": {

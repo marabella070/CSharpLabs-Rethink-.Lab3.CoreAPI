@@ -777,6 +777,18 @@ public class Client
                 {
                     var response = XmlHelper.DeserializeXml<ExchangeOffer>(xml);
 
+                    PrintMessageToConsole($"Received XML: {response}", Models.LogTag.Error);
+
+
+
+
+
+
+
+
+
+
+
                     if (response == null || string.IsNullOrWhiteSpace(response.XmlPayload) || string.IsNullOrWhiteSpace(response.TypeOfExchangeObject))
                     {
                         PrintMessageToConsole("Invalid incoming_item: missing payload or type name.", Models.LogTag.Error);
