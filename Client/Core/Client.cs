@@ -232,7 +232,7 @@ public class Client
         catch (Exception ex)
         {
             PrintMessageToConsole($"Failed to serialize {typeof(T).Name} to JSON: {ex.Message}", Models.LogTag.Error);
-            return false;
+            return null;
         }
 
         // Преобразуем сериализованный JSON в строку Base64
@@ -243,29 +243,14 @@ public class Client
         if (typeName == null)
         {
             PrintMessageToConsole($"Failed to get type name for {typeof(T).Name}.", Models.LogTag.Error);
-            return false;
-        }
-
-
-
-
-        /*
-        string? xmlData = XmlHelper.SerializeToXml(item);
-        string? typeName = typeof(T).AssemblyQualifiedName;
-        if (xmlData == null || typeName == null)
-        {
-            PrintMessageToConsole($"Failed to serialize {typeof(T).Name} for exchange.", Models.LogTag.Error);
             return null;
         }
-        */
-
 
         var exchangeRequestCommand = new ExchangeRequest
         {
             ServerTransactionId = sid,
             toClientId = toClientId,
             TypeOfExchangeObject = typeName,
-            // XmlPayload = xmlData
             XmlPayload = base64Data
         };
 
@@ -350,29 +335,11 @@ public class Client
             return false;
         }
 
-
-
-
-
-        /*
-        string? xmlData = XmlHelper.SerializeToXml(item);
-        string? typeName = typeof(T).AssemblyQualifiedName;
-        if (xmlData == null || typeName == null)
-        {
-            PrintMessageToConsole($"Failed to serialize {typeof(T).Name} for sending.", Models.LogTag.Error);
-            return default;
-        }
-        */
-
-
-
-
         var itemSendCommand = new SendItem
         {
             ServerTransactionId = sid,
             toClientId = toClientId,
             TypeName = typeName,
-            // XmlPayload = xmlData
             XmlPayload = base64Data
         };
 
@@ -702,10 +669,6 @@ public class Client
 
 
 
-
-
-
-
             case "incoming_item":
                 {
                     var incoming = XmlHelper.DeserializeXml<IncomingItem>(xml);
@@ -720,14 +683,20 @@ public class Client
                     {
                         if (_pendingIncomingItems.TryGetValue(incoming.ServerTransactionId, out var tcsObj))
                         {
-                            /*
                             try
                             {
-                                object? deserialized = XmlHelper.DeserializeXmlAsType(incoming.XmlPayload, incoming.TypeName);
+                                // Декодируем Base64 строку в байты
+                                byte[] binaryData = Convert.FromBase64String(incoming.XmlPayload);
+
+                                // Преобразуем байты обратно в строку JSON
+                                string jsonData = Encoding.UTF8.GetString(binaryData);
+
+                                // Десериализуем JSON строку обратно в объект
+                                var deserialized = JsonSerializer.Deserialize(jsonData, Type.GetType(incoming.TypeName));
 
                                 if (deserialized == null)
                                 {
-                                    PrintMessageToConsole("Failed to deserialize object from payload.", Models.LogTag.Error);
+                                    PrintMessageToConsole("Failed to deserialize object from JSON payload.", Models.LogTag.Error);
                                 }
 
                                 tcsObj.SetResult(deserialized);
@@ -737,31 +706,6 @@ public class Client
                                 PrintMessageToConsole($"Exception during deserialization: {ex.Message}", Models.LogTag.Error);
                                 tcsObj.SetResult(null);
                             }
-                            */
-
-
-                            // Декодируем Base64 строку в байты
-                            byte[] binaryData = Convert.FromBase64String(incoming.XmlPayload);
-                            
-                            // Преобразуем байты обратно в строку JSON
-                            string jsonData = Encoding.UTF8.GetString(binaryData);
-
-                            // Десериализуем JSON строку обратно в объект
-                            var deserialized = JsonSerializer.Deserialize(jsonData, Type.GetType(incoming.TypeName));
-
-                            if (deserialized == null)
-                            {
-                                PrintMessageToConsole("Failed to deserialize object from JSON payload.", Models.LogTag.Error);
-                            }
-
-                            tcsObj.SetResult(deserialized);
-
-
-
-
-
-
-
 
                             _pendingIncomingItems.Remove(incoming.ServerTransactionId);
                         }
@@ -777,18 +721,6 @@ public class Client
                 {
                     var response = XmlHelper.DeserializeXml<ExchangeOffer>(xml);
 
-                    PrintMessageToConsole($"Received XML: {response}", Models.LogTag.Error);
-
-
-
-
-
-
-
-
-
-
-
                     if (response == null || string.IsNullOrWhiteSpace(response.XmlPayload) || string.IsNullOrWhiteSpace(response.TypeOfExchangeObject))
                     {
                         PrintMessageToConsole("Invalid incoming_item: missing payload or type name.", Models.LogTag.Error);
@@ -797,21 +729,6 @@ public class Client
 
                     try
                     {
-                        /*
-                        object? deserialized = XmlHelper.DeserializeXmlAsType(response.XmlPayload, response.TypeOfExchangeObject);
-
-                        if (deserialized == null)
-                        {
-                            PrintMessageToConsole("Failed to deserialize object from payload.", Models.LogTag.Error);
-                        }
-
-                        // Запускаем обработку в фоне, без ожидания
-                        _ = HandleExchangeRequest(response.ServerTransactionId,
-                                                    response.fromClientId,
-                                                    response.TypeOfExchangeObject,
-                                                    deserialized!);
-                        */
-
                         // Декодируем Base64 строку в байты
                         byte[] binaryData = Convert.FromBase64String(response.XmlPayload);
                         
@@ -826,8 +743,6 @@ public class Client
                             PrintMessageToConsole("Failed to deserialize object from JSON payload.", Models.LogTag.Error);
                         }
 
-
-
                         // Запускаем обработку в фоне, без ожидания
                         _ = HandleExchangeRequest(response.ServerTransactionId,
                                                     response.fromClientId,
@@ -841,8 +756,6 @@ public class Client
 
                     break;
                 }
-
-
 
 
 
