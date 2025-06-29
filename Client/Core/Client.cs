@@ -212,7 +212,7 @@ public class Client
         string? message = XmlHelper.SerializeToXml(confirm);
         if (message == null)
         {
-            PrintMessageToConsole("Failed to serialize item receipt confirmation.", Models.LogTag.Error);
+            PrintMessageToConsole("Failed to serialize receipt confirmation to XML.", Models.LogTag.Error);
             return;
         }
 
@@ -225,7 +225,7 @@ public class Client
         string? typeName = typeof(T).AssemblyQualifiedName;
         if (xmlData == null || typeName == null)
         {
-            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            PrintMessageToConsole($"Failed to serialize {typeof(T).Name} for exchange.", Models.LogTag.Error);
             return null;
         }
 
@@ -240,7 +240,7 @@ public class Client
         string? message = XmlHelper.SerializeToXml(exchangeRequestCommand);
         if (message == null)
         {
-            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            PrintMessageToConsole("Failed to serialize exchange request command.", Models.LogTag.Error);
             return null;
         }
 
@@ -277,29 +277,11 @@ public class Client
             return typedResult;
         }
 
-        PrintMessageToConsole($"Failed to cast received item to {typeof(T).Name}.", Models.LogTag.Error);
+        PrintMessageToConsole($"Received item type {receivedObject.GetType().Name} doesn't match expected type {typeof(T).Name}.", Models.LogTag.Error);
         await ReleaseGlobalTransactionIdAsync(transactionId);
 
         return default;
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -317,7 +299,7 @@ public class Client
         string? typeName = typeof(T).AssemblyQualifiedName;
         if (xmlData == null || typeName == null)
         {
-            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            PrintMessageToConsole($"Failed to serialize {typeof(T).Name} for sending.", Models.LogTag.Error);
             return default;
         }
 
@@ -332,7 +314,7 @@ public class Client
         string? message = XmlHelper.SerializeToXml(itemSendCommand);
         if (message == null)
         {
-            PrintMessageToConsole("Failed to serialize item.", Models.LogTag.Error);
+            PrintMessageToConsole("Failed to serialize item send command.", Models.LogTag.Error);
             return false;
         }
 
